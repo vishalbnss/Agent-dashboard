@@ -196,8 +196,9 @@ def delete_project(pid: int, s: Session = Depends(db.get_session)):
         for row in s.exec(select(model).where(model.project_id == pid)).all():
             s.delete(row)
     for run in s.exec(select(db.Run).where(db.Run.project_id == pid)).all():
-        for ph in s.exec(select(db.RunPhase).where(db.RunPhase.run_id == run.id)).all():
-            s.delete(ph)
+        for model in (db.RunPhase, db.Approval):  # a reused run id must never inherit an old approval
+            for row in s.exec(select(model).where(model.run_id == run.id)).all():
+                s.delete(row)
         s.delete(run)
     s.delete(p)
     s.commit()

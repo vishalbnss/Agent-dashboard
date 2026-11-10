@@ -791,3 +791,18 @@ def test_hosting_password_gate_secret_and_database_url(client, monkeypatch):
     import re as re_
     for given in ("postgres://u:p@h/db", "postgresql://u:p@h/db"):
         assert re_.sub(r"^postgres(ql)?://", "postgresql+psycopg://", given) == "postgresql+psycopg://u:p@h/db"
+
+
+def test_deleting_a_project_removes_its_approvals(client):
+    pid = client.post("/api/projects", json={"name": "Doomed"}).json()["id"]
+    rid = tools.do_start_run(pid, "implement DEL-1", client="claude")["run_id"]
+    tools.do_submit_design_document(pid, rid, "# Plan")
+    assert client.post(f"/api/runs/{rid}/approvals/1/decide", json={"decision": "approved", "name": "PO"}).status_code == 200
+    assert client.delete(f"/api/projects/{pid}").status_code == 204
+    with Session(db.engine) as s:
+        assert s.exec(select(db.Approval).where(db.Approval.run_id == rid)).all() == []
+        assert s.exec(select(db.RunPhase).where(db.RunPhase.run_id == rid)).all() == []
+    # a new run (which SQLite may give the same id) starts with no decision
+    pid2 = client.post("/api/projects", json={"name": "Fresh"}).json()["id"]
+    rid2 = tools.do_start_run(pid2, "implement NEW-1", client="claude")["run_id"]
+    assert tools.do_check_approval(pid2, rid2)["status"] == "none"
