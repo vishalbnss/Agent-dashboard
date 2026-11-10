@@ -1,0 +1,13 @@
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+backend/.venv
+backend/.env
+backend/data
+backend/tests
+frontend/dist
+tmp
+docs
+.playwright-mcp
+.git
+debug.log

@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+sqlmodel
+cryptography
+mcp
+httpx
+python-dotenv
+pytest
+psycopg[binary]

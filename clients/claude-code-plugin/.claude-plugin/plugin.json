@@ -1,0 +1,5 @@
+{
+  "name": "agents-dashboard-usage",
+  "description": "Optional: reports exact token usage of Agents Dashboard runs back to the dashboard when a Claude Code session ends. The dashboard itself needs no plugin; connect it per project with the command on the project page.",
+  "version": "0.2.0"
+}

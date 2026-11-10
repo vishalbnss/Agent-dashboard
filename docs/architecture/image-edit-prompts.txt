@@ -1,0 +1,68 @@
+Built-in image generation was used to edit the supplied raster diagram.
+
+Initial edit prompt:
+Edit the attached architecture diagram (Image 1 is the edit target). Create a corrected production architecture diagram for this exact project, preserving its clean technical-diagram style, color palette, four main columns, and component relationships. Use a high-resolution wide landscape canvas, crisp readable typography and generous spacing. Expand the Azure column if necessary. All labels must be spelled correctly, no overlaps, no cut-off edges, no decorative imagery.
+
+TITLE: "Agents Dashboard — System Architecture"
+SUBTITLE: "Production deployment target on Azure · developer-run agents · people and external services"
+
+REQUIRED CORRECTIONS:
+1. Replace the heading "COMPANY SERVER (AGENTS DASHBOARD)" with "AZURE — AGENTS DASHBOARD".
+2. Replace "HTTPS reverse proxy / load balancer (TLS)" with "API gateway — Azure API Management (APIM)". Secondary line: "HTTPS/TLS · /mcp + /api · access policies". APIM is a managed API gateway, NOT a container.
+3. Backend and web dashboard are separate containers inside Azure. Label their boxes "Backend container — FastAPI (Python)" and "Web dashboard container — React". Container hosting must be visible, but do not select AKS or Container Apps because the hosting product has not been chosen.
+4. Remove every occurrence of "PLANNED" and "Planned for production", including the legend. Use solid borders for SSO, logs/monitoring, and backups. The whole diagram is the production deployment target, not a statement that all services are implemented in the current repository.
+5. Replace the standalone "Secret key APP_SECRET" box with "Azure Key Vault". Text: "APP_SECRET · integration / DB secrets" and "Managed identity access". Connect Key Vault to the backend with the label "secret references". The backend uses APP_SECRET to encrypt stored integration tokens; Key Vault stores the encryption key and credentials.
+6. Database text must read "Primary: Databricks Lakebase PostgreSQL" and "Fallback: PostgreSQL (configuration-based)". Other database text: "Projects · tickets · runs · phases · approvals". Do not mention SQLite. Do not show automatic failover or replication to the fallback: it is an alternative configured using DATABASE_URL, not an existing failover mechanism.
+7. Delete "Outgoing HTTPS only · nothing installed, no open ports". Replace with "Local AI client + Git required; project MCP configuration added". Do not claim no software is installed, no ports exist, or that all Git traffic is HTTPS.
+8. Correct API flow: the developer AI connects to APIM and then the backend /mcp endpoint. The web dashboard/browser uses REST /api through APIM. Do NOT draw a direct web-dashboard-to-backend REST arrow bypassing APIM. Browser loads the React web container through its separate HTTPS web ingress; APIM routes APIs, not static frontend assets.
+9. MCP link label: "MCP over HTTPS · Streamable HTTP · project ID + key". Reply note: "Coordinator + stage prompts · run ID · approval decisions and comments". Add "Agent polls approval every 20 seconds".
+10. Human browser arrows go to the web dashboard container. SSO box: "SSO — Microsoft Entra ID" with "Company login · dashboard / API access". Connect SSO to the browser/API access flow. Do not represent SSO as authorization to push to GitHub.
+11. Monitoring box: "Logs & monitoring" with "Azure Monitor / Application Insights" and "APIM + container telemetry". Backups box: "Database backups & recovery" with "Lakebase snapshots / point-in-time restore" and "PostgreSQL backup policy". Connect these logically to the monitored services and database. Do not call Lakebase backups Azure Backup.
+12. Legend: "Containers / application" | "Managed services" | "People" | "External services". No future/planned indicators.
+
+KEEP THESE PROJECT DETAILS:
+LEFT COLUMN "DEVELOPER WORKSTATION", one per developer. Main box "Claude Code / Codex" with "Developer AI login · project MCP configuration". Inside: "Coordinator AI" / "Drives the run, stage by stage"; "9 stage agents" / "Claude: Haiku · Sonnet · Opus" / "Codex: Luna · Terra · Sol" / "Model selected per stage".
+Local repository box: "Local Git repository"; "feature/<ticket> branch"; ".agent-runs/<ticket>/ evidence"; "AGENTS.md + CLAUDE.md routing note (written by the AI)". Bidirectional AI-to-repository connector labeled "reads · edits · commits".
+Optional "Usage hook" / "Reports token usage"; connection goes via APIM to REST /api, labeled "usage telemetry".
+AZURE backend contains four internal boxes: "MCP endpoint /mcp" / "Checks project ID + secret key on every call"; "REST API /api" / "Projects · connections · approvals · runs"; "Workflow service" / "Coordinator + 9 stage prompts · approvals · run tracking"; "Integration clients" / "Jira (Atlassian MCP) · GitHub". Internal MCP-to-workflow link and workflow-to-integration get_ticket link. Backend reads/writes database.
+Web dashboard includes "Projects" "Connections" "Approvals" "Runs" and an "HTTPS web ingress" label.
+PEOPLE column: "Developer" / "Sets up project, connects AI, authorizes push / PR"; "Product Owner / FDE" / "Reviews and approves design documents". Show people browser access to the web container.
+EXTERNAL SERVICES column: "AI providers" / "Anthropic / OpenAI" / "Through developer's AI login"; "Figma MCP" / "Designs · sign-in inside the AI"; "Atlassian MCP" / "Jira tickets · project OAuth connection"; "GitHub" / "Branches + pull requests".
+Developer AI calls AI providers directly and reads Figma through its own Figma MCP connection; neither flow goes through the dashboard backend.
+Backend integration client calls Atlassian MCP over HTTPS using project OAuth (no pasted Jira tokens).
+Backend can open a GitHub PR with a saved GitHub token, only after developer authorization.
+Separate developer-repository-to-GitHub edge: "git push (HTTPS / SSH) · gh pr create fallback · developer authorization required".
+Do not imply the backend executes code in the developer repo, installs the AI client, or directly makes provider model calls.
+
+Prioritize correct endpoints and clear label placement over exact old box coordinates. Preserve all required component names and service boundaries. Avoid crossing lines through text or through unrelated boxes. Use elbow connectors with arrowheads, separate routes, and small white-backed labels. The final image must be suitable for a manager's production architecture review.
+
+Connector correction prompt:
+Edit the most recent generated Agents Dashboard architecture diagram. Preserve all its corrected text, colors, title, main columns, and box positions. Correct only the container boundary and connector errors. This is a technical accuracy edit; arrow endpoints are critical.
+
+TEXT FIX: The "Container hosting (Azure)" region must enclose BOTH the FastAPI backend container and the React web dashboard container. Its secondary label must say only "Backend + web dashboard deployed as separate containers". Remove the line mentioning Azure Container Apps or AKS: no hosting product has been selected. APIM and HTTPS web ingress must remain outside this container-hosting region. Change the web ingress subtitle to "Azure HTTPS ingress" with no added product alternatives.
+
+Remove ALL existing connectors first, then draw ONLY the following clearly labelled connectors, with elbow routes in empty spaces. Lines must originate/terminate on the exact named boxes. Do not add any other arrows:
+1. Claude Code / Codex -> API gateway / APIM: "MCP over HTTPS · Streamable HTTP · project ID + key".
+2. API gateway / APIM -> MCP endpoint /mcp: "/mcp". This endpoint is the left internal box inside FastAPI.
+3. Web dashboard container -> API gateway / APIM: "REST /api over HTTPS". This is an UPWARD API request arrow into APIM, NOT a downward APIM-to-web-ingress arrow.
+4. API gateway / APIM -> REST API /api: "/api". This endpoint is the right internal box inside FastAPI.
+5. People (Developer and Product Owner / FDE) -> HTTPS web ingress -> Web dashboard container: "Browser HTTPS". The ingress serves the web container; there is NO APIM-to-web-ingress connection.
+6. Claude Code / Codex -> AI providers: "model calls". Use the upper exterior route.
+7. Claude Code / Codex -> Figma MCP: "reads designs · AI sign-in". Use the second upper exterior route and extend down into the Figma MCP box, NOT the AI providers box. Delete the erroneous Developer-to-Figma arrow.
+8. Claude Code / Codex <-> Local Git repository: "reads · edits · commits".
+9. Usage hook -> API gateway / APIM: "Usage telemetry · REST /api". Route up along the left edge of Azure. The Usage hook MUST NOT connect to the database. The Usage hook MUST NOT be the source of the Git push line.
+10. MCP endpoint -> Workflow service: "tool calls".
+11. Workflow service -> Integration clients: "get_ticket".
+12. Backend container <-> Database box: "reads / writes · DATABASE_URL".
+13. Backend container -> Azure Key Vault: "secret references · managed identity".
+14. Integration clients -> Atlassian MCP: "HTTPS · project OAuth". This is outbound from integrations; do NOT point a return arrow to the outside of the backend.
+15. Integration clients -> GitHub: "PR API · saved token · developer authorization".
+16. Local Git repository -> GitHub: "git push (HTTPS / SSH) · gh pr create fallback · developer authorization". Start on the Local Git repository, NOT on the Usage hook. Route along the bottom margin.
+17. People -> SSO — Microsoft Entra ID: "Company sign-in". This SSO connector ends ONLY on Entra ID, never on the database.
+18. Database -> Database backups & recovery: "snapshots / restore". Start from database, not Key Vault. Route through the whitespace below the database / Key Vault row.
+For Logs & monitoring, the scope text "APIM + container telemetry" is sufficient; no connector is needed if it would cross other lines.
+
+Explicitly forbidden connectors: APIM->web ingress; Usage hook->database; SSO->database; Logs->database; Key Vault->backups; Developer->Figma; Figma reads->AI providers; Usage hook->GitHub; web dashboard->backend directly.
+Keep support-service boxes solid-bordered, no "planned". Keep the primary/fallback database labels and all required text. Maintain generous spacing, readable labels, no crossings through unrelated boxes. The final image should look polished and mechanically correct.
+
+The editable vector diagram is the reviewed architecture artifact; the generated raster drafts required connector corrections.

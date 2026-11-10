@@ -1,0 +1,7 @@
+# Code Review and Security
+
+Use a reviewer that did not implement the change. Read every source Jira/Figma contract, all `04-merge/` artifacts, the complete diff, implementation report, and test results. Review dependency completeness, traceability, correctness, regression risk, state/data handling, combined design fidelity, responsiveness, semantics, keyboard/focus behavior, and whether tests faithfully cover every source and cluster criterion.
+
+Run the build/test gates recorded in AGENTS.md and the dependency audit for the project's package manager (npm: `npm audit --omit=dev --audit-level=high`). Inspect for secrets and personal/financial data; unsafe HTML or script execution; injection and untrusted URLs; insecure fetch/storage/logging; authorization assumptions; vulnerable production dependencies; and unexpected lockfile changes. Never run `npm audit fix --force` automatically.
+
+Write `.agent-runs/<DELIVERY-ID>/07-review/findings.md`. Classify findings as blocker, high, medium, or low with file/line evidence and remediation. Block PR creation on blockers/highs. The coordinator sends blocker/high evidence to Stage 05, requires affected tests and then complete final gates, and returns to this same reviewer for exactly one follow-up. Record whether every finding is fixed, accepted with rationale, or still blocking; any remaining or new blocker/high stops the pipeline. Store full command output in files and keep the findings report near 2,000 words when evidence permits.
