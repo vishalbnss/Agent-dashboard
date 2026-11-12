@@ -13,6 +13,7 @@ Nothing here touches the developer's files: the server may run on another machin
 import json
 import re
 import tomllib
+from pathlib import Path
 from urllib.parse import parse_qs
 
 from sqlmodel import Session
@@ -62,7 +63,9 @@ def vscode_json(project: db.Project, base: str) -> str:
 
 # ---- one setup command: a script that writes every AI's config in the project folder ----
 SETUP_FILES = {"claude": ".mcp.json", "codex": ".codex/config.toml", "vscode": ".vscode/mcp.json",
-               "copilot-agent": ".github/agents/agents-dashboard.agent.md"}
+               "copilot-agent": ".github/agents/agents-dashboard.agent.md",
+               "figma-check": ".agents-dashboard/figma-check.mjs", "claude-settings": ".claude/settings.json",
+               "codex-hooks": ".codex/hooks.json", "copilot-hooks": ".github/hooks/agents-dashboard.json"}
 SECRET_FILES = [".mcp.json", ".codex/config.toml", ".vscode/mcp.json"]  # hold the key; the agent file does not
 
 
@@ -89,6 +92,50 @@ def _merge_toml(existing: str, fresh: str) -> str:
     return merged
 
 
+# Session-start hooks (Claude Code, Codex, Copilot CLI): one shared script reports whether the agent's Figma MCP
+# server is signed in, before the first message and without a model call. It reads the dashboard URL (project + key)
+# from the project's MCP config, so these committed files hold no secret.
+FIGMA_CHECK = (Path(__file__).resolve().parent / "hooks" / "figma-check.mjs").read_text(encoding="utf-8")
+FIGMA_CHECK_SCRIPT = ".agents-dashboard/figma-check.mjs"
+_OLD_CLAUDE_HOOK = "node .claude/hooks/agents-dashboard-figma.mjs"  # earlier, Claude-only location
+
+
+def hook_command(client: str) -> str:
+    return f"node {FIGMA_CHECK_SCRIPT} {client}"
+
+
+FIGMA_HOOK_COMMAND = hook_command("claude")
+
+
+def _merge_session_hooks(existing: str, client: str) -> str:
+    """Add our SessionStart hook to a Claude-style hooks file (.claude/settings.json, .codex/hooks.json) once.
+    Keeps every other setting and hook; replaces our earlier Claude-only entry."""
+    data = json.loads(existing) if existing.strip() else {}
+    if not isinstance(data, dict) or not isinstance(data.get("hooks", {}), dict):
+        raise ValueError('expected a JSON object with a "hooks" object')
+    starts = data.setdefault("hooks", {}).setdefault("SessionStart", [])
+    if not isinstance(starts, list):
+        raise ValueError('expected "hooks.SessionStart" to be a list')
+    ours = hook_command(client)
+    commands = lambda e: [h.get("command") for h in e.get("hooks", []) if isinstance(h, dict)] if isinstance(e, dict) else []
+    # No matcher: run on every session start, including resumed chats (VS Code reopens them) and /clear.
+    # Re-adding also drops the "startup|clear" matcher older setups wrote.
+    starts[:] = [e for e in starts if _OLD_CLAUDE_HOOK not in commands(e) and ours not in commands(e)]
+    starts.append({"hooks": [{"type": "command", "command": ours}]})
+    return json.dumps(data, indent=2) + "\n"
+
+
+def _merge_claude_settings(existing: str) -> str:
+    return _merge_session_hooks(existing, "claude")
+
+
+def copilot_hooks() -> str:
+    """.github/hooks/agents-dashboard.json for Copilot CLI (our own file, so it is simply rewritten)."""
+    run = hook_command("copilot")
+    return json.dumps({"version": 1, "hooks": {"sessionStart": [
+        {"type": "command", "bash": run, "powershell": run, "timeoutSec": 10}]}}, indent=2) + "\n"
+
+
 def setup_file(project: db.Project, base: str, client: str, existing: str = "") -> str:
     """The new content of one config file, merged into what the developer already has. ValueError if it cannot be."""
     from app import copilot
@@ -101,6 +148,14 @@ def setup_file(project: db.Project, base: str, client: str, existing: str = "") 
         return _merge_toml(existing, codex_toml(project, base))
     if client == "copilot-agent":
         return copilot.agent_profile(project.id, project.name)
+    if client == "figma-check":
+        return FIGMA_CHECK
+    if client == "claude-settings":
+        return _merge_session_hooks(existing, "claude")
+    if client == "codex-hooks":
+        return _merge_session_hooks(existing, "codex")
+    if client == "copilot-hooks":
+        return copilot_hooks()
     raise ValueError("unknown client")
 
 

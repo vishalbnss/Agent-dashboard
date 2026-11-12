@@ -341,7 +341,8 @@ function ProjectContent({ p, runs, approvals, routeTab, load }: { p: ProjectDeta
     <>
       <PageHeader title={p.name} breadcrumbs={[{ label: "Projects", href: "#/projects" }]} actions={<span className={`tag ${aiOn ? "ok" : "warn"}`}>{aiOn ? "AI connected" : "Setup needed"}</span>} />
       {deleteError && <ErrorNotice message={deleteError} onRetry={() => setDeleteError("")} />}
-      <div className="project-context"><span><Icon name="branch" />{p.repo_url || p.local_path || "Repository details will appear after connecting"}</span><span>{runs.length} runs</span><span>{waiting} pending approvals</span></div>
+      <div className="project-context"><span><Icon name="branch" />{p.repo_url || p.local_path || "Repository details will appear after connecting"}</span><span>{runs.length} runs</span><span>{waiting} pending approvals</span>
+        <RoutingSwitch p={p} onChanged={load} /></div>
       <div className="ptabs" role="tablist">
         <a role="tab" aria-selected={tab === "connections"} href={`#/projects/${id}/connections`}>Connections</a>
         <a role="tab" aria-selected={tab === "tickets"} href={`#/projects/${id}/tickets`}>Tickets <span className="count">{p.tickets.length}</span></a>
@@ -419,6 +420,20 @@ const AI_LABEL: Record<string, string> = { claude: "Claude Code", codex: "Codex"
 function CopyButton({ text }: { text: string }) {
   const [done, setDone] = useState(false);
   return <button className="secondary" onClick={() => navigator.clipboard.writeText(text).then(() => { setDone(true); setTimeout(() => setDone(false), 1500); })}>{done ? "Copied" : "Copy"}</button>;
+}
+
+/* Low-cost test mode: no Opus/Sol by default. Applies to runs started after the change. */
+function RoutingSwitch({ p, onChanged }: { p: ProjectDetail; onChanged: () => void }) {
+  const [saving, setSaving] = useState(false);
+  const value = p.caps.routing === "low-cost" ? "low-cost" : "standard";
+  const change = async (routing: "standard" | "low-cost") => {
+    if (routing === value) return;
+    setSaving(true);
+    try { await api.patchProject(p.id, { caps: { routing } }); onChanged(); } finally { setSaving(false); }
+  };
+  return <span className="routing-switch" title="Low-cost test mode routes every stage to Haiku or Sonnet (Luna or Terra on Codex). Applies to runs started after the change.">
+    Models <Seg label="Model routing" value={value} onChange={(v) => { if (!saving) void change(v); }} options={[["standard", "Standard"], ["low-cost", "Low-cost test"]]} />
+  </span>;
 }
 
 function Seg<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: [T, string][]; onChange: (v: T) => void }) {
@@ -574,6 +589,7 @@ function RunPage({ id }: { id: number }) {
       {r.goal !== runTitle(r) && <details className="request"><summary className="muted">Full request</summary><pre>{r.goal}</pre></details>}
       <div className="meta">
         <span><strong>Status</strong> <RunStatus run={r} /></span>
+        {r.routing === "low-cost" && <span><strong>Models</strong> <span className="tag warn">Low-cost test mode</span></span>}
         {r.branch && <span><strong>Branch</strong> {r.branch}</span>}
         {r.pr_url && <span><a href={r.pr_url} target="_blank">Open pull request</a></span>}
       </div>

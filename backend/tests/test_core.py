@@ -806,3 +806,78 @@ def test_deleting_a_project_removes_its_approvals(client):
     pid2 = client.post("/api/projects", json={"name": "Fresh"}).json()["id"]
     rid2 = tools.do_start_run(pid2, "implement NEW-1", client="claude")["run_id"]
     assert tools.do_check_approval(pid2, rid2)["status"] == "none"
+
+
+def test_low_cost_test_mode_routes_every_stage_below_opus(client):
+    pid = client.post("/api/projects", json={"name": "Cheap"}).json()["id"]
+    assert client.patch(f"/api/projects/{pid}", json={"caps": {"routing": "low-cost"}}).status_code == 200
+    started = tools.do_start_run(pid, "implement CHEAP-1", client="claude")
+    assert started["routing"] == "low-cost"
+    routes = {s["stage"]: s["model"] for s in started["stages"]}
+    assert "opus" not in routes.values() and routes["implementation"] == "sonnet" and routes["branch-preflight"] == "haiku"
+    plan = started["plan"]
+    assert "| 05 — Implementation/remediation | `sonnet` | `medium` |" in plan and "| 03 — Figma intake | `sonnet` | `medium` |" in plan
+    assert "low-cost test mode" in plan and "Do not downgrade Stages 03–05 below Opus" not in plan
+    agents = client.get(f"/api/runs/{started['run_id']}").json()
+    assert agents["routing"] == "low-cost" and agents["agents"][4]["planned_model"] == "sonnet"
+
+    codex = onboarding.coordinator("codex", low_cost=True)  # Codex names follow, and nothing routes to Sol
+    assert "| 05 — Implementation/remediation | `gpt-5.6-terra` | `medium` |" in codex
+    assert "| 03 — Figma intake | `gpt-5.6-sol`" not in codex
+
+    # standard projects are untouched
+    std = client.post("/api/projects", json={"name": "Std"}).json()["id"]
+    s = tools.do_start_run(std, "implement STD-1", client="claude")
+    assert s["routing"] == "standard" and {x["stage"]: x["model"] for x in s["stages"]}["implementation"] == "opus"
+    assert "Do not downgrade Stages 03–05 below Opus" in s["plan"]
+
+
+def test_session_start_hooks_report_figma_before_the_first_message(client, monkeypatch):
+    pid = client.post("/api/projects", json={"name": "Hooked"}).json()["id"]
+    key = _key(pid)
+    file = lambda c, body="": client.post(f"/api/projects/{pid}/setup-file?key={key}&client={c}", content=body.encode())
+    script = file("figma-check").text
+    for needle in ("claude", "codex", "copilot", "mcp", "list", "--json", ".mcp.json", ".codex/config.toml"):
+        assert needle in script
+    assert key not in script  # no secret in the committed files
+    for shell in ("ps", "sh"):
+        text = client.get(f"/api/projects/{pid}/setup?key={key}&shell={shell}").text
+        for path in (".agents-dashboard/figma-check.mjs", ".claude/settings.json", ".codex/hooks.json", ".github/hooks/agents-dashboard.json"):
+            assert path in text
+
+    # Claude settings: keeps the developer's hooks, replaces our earlier Claude-only entry, adds ours once
+    mine = {"model": "sonnet", "hooks": {"SessionStart": [
+        {"matcher": "startup", "hooks": [{"type": "command", "command": "echo hi"}]},
+        {"matcher": "startup|clear", "hooks": [{"type": "command", "command": "node .claude/hooks/agents-dashboard-figma.mjs"}]}],
+        "Stop": [{"hooks": [{"type": "command", "command": "x"}]}]}}
+    once = file("claude-settings", json.dumps(mine)).text
+    twice = json.loads(file("claude-settings", once).text)
+    starts = twice["hooks"]["SessionStart"]
+    assert twice["model"] == "sonnet" and twice["hooks"]["Stop"] == mine["hooks"]["Stop"]
+    assert [h["command"] for e in starts for h in e["hooks"]] == ["echo hi", "node .agents-dashboard/figma-check.mjs claude"]
+    assert "matcher" not in starts[1]  # fires on resume too, not only on a fresh start
+    old = {"hooks": {"SessionStart": [{"matcher": "startup|clear", "hooks": [{"type": "command", "command": "node .agents-dashboard/figma-check.mjs claude"}]}]}}
+    assert json.loads(file("claude-settings", json.dumps(old)).text)["hooks"]["SessionStart"] == [
+        {"hooks": [{"type": "command", "command": "node .agents-dashboard/figma-check.mjs claude"}]}]
+    assert file("claude-settings", '{"hooks": []}').status_code == 409
+
+    # Codex hooks.json and the Copilot CLI hook file call the same script for their own client
+    codex_hooks = json.loads(file("codex-hooks", file("codex-hooks").text).text)
+    assert [h["command"] for e in codex_hooks["hooks"]["SessionStart"] for h in e["hooks"]] == ["node .agents-dashboard/figma-check.mjs codex"]
+    cop = json.loads(file("copilot-hooks").text)
+    assert cop["version"] == 1 and cop["hooks"]["sessionStart"][0]["powershell"] == "node .agents-dashboard/figma-check.mjs copilot"
+
+    # the hook's report marks Figma connected for Claude Code, without any MCP call
+    report = lambda k, body, c="claude": client.post(f"/api/projects/{pid}/figma-check?key={k}&client={c}", json=body)
+    assert report("wrong", {"connected": True}).status_code == 401
+    assert report(key, {"connected": True, "detail": "Figma MCP server connected at session start (figma)"}).status_code == 200
+    figma_ = next(i for i in client.get(f"/api/projects/{pid}").json()["integrations"] if i["kind"] == "figma")
+    assert figma_["config"]["connected"] is True and figma_["config"]["clients"]["claude"]["connected"] is True
+    logs = client.get(f"/api/projects/{pid}/logs").json()["items"]
+    assert logs[0]["event"] == "figma.startup-check" and logs[0]["message"].startswith("Figma connected at session start")
+    assert report(key, {"connected": True, "detail": "signed in"}, "codex").status_code == 200
+    clients = next(i for i in client.get(f"/api/projects/{pid}").json()["integrations"] if i["kind"] == "figma")["config"]["clients"]
+    assert set(clients) == {"claude", "codex"}
+    assert report(key, {"connected": True}, "nobody").status_code == 400
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pw")  # the hook has no password, only the project key
+    assert report(key, {"connected": False, "detail": "Needs authentication"}, "copilot").status_code == 200

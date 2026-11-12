@@ -51,7 +51,7 @@ app.mount("/", _root)
 
 # Open without the dashboard password: MCP and the setup/config downloads check the project key themselves,
 # the OAuth callback checks its one-time state, and the host's health check needs no credentials.
-_OPEN = re.compile(r"^/(mcp(/.*)?|api/health|api/oauth/[^/]+/callback|api/projects/\d+/(setup|setup-file|mcp-config|copilot-agent))$")
+_OPEN = re.compile(r"^/(mcp(/.*)?|api/health|api/oauth/[^/]+/callback|api/projects/\d+/(setup|setup-file|mcp-config|copilot-agent|figma-check))$")
 
 
 class PasswordGate:

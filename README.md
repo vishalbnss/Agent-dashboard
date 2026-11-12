@@ -55,6 +55,13 @@ Claude Code / Codex (in the developer's repo)  --MCP (project id + key)-->  Fast
    then report the result through `report_connection`, without creating a run. Downloaded Codex configs
    also include this instruction, and onboarding preserves it in the project guide. No special prompt
    is needed for normal use; the Figma card's **Manual recheck** is an optional troubleshooting fallback.
+   The setup command also installs session-start hooks for Claude Code (`.claude/settings.json`), Codex
+   (`.codex/hooks.json`) and Copilot CLI (`.github/hooks/agents-dashboard.json`). Each runs the shared
+   `.agents-dashboard/figma-check.mjs` in the background when a session starts: it reads `claude mcp list`,
+   `codex mcp list --json` or `copilot mcp list` and reports Figma's sign-in status to `/api/projects/{id}/figma-check`,
+   so the card is current before the first message, with no model call. Copilot's list output is undocumented, so
+   that check reports only when it can clearly read the Figma line. The in-session check still confirms with a real
+   Figma read. Codex may ask you to trust the project's hooks once.
    A new empty chat does not run an agent check until the first message. Codex must trust the project
    folder to load its local config; initial Figma OAuth sign-in or renewed authorization still requires the user.
    The card refreshes automatically and shows when the check happened. A configured server or

@@ -177,6 +177,26 @@ async def setup_file(pid: int, key: str, client: str, request: Request, s: Sessi
         raise HTTPException(409, f"Could not merge {connect.SETUP_FILES[client]}: {e}")
 
 
+class FigmaCheckIn(BaseModel):
+    connected: bool
+    detail: str = ""
+
+
+@router.post("/projects/{pid}/figma-check")
+def figma_check(pid: int, key: str, body: FigmaCheckIn, client: str = "claude", s: Session = Depends(db.get_session)):
+    """The Claude Code session-start hook reports whether its Figma MCP server is connected (no model call involved)."""
+    from app.mcp.tools import do_report_connection
+    p = _get(s, db.Project, pid)
+    if key != p.key:
+        raise HTTPException(401, "Wrong key")
+    result = do_report_connection(pid, "figma", body.connected, body.detail, client)
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    record(pid, "figma.startup-check", ("Figma connected" if body.connected else "Figma not ready") + f" at session start: {body.detail}",
+           level="info" if body.connected else "warn", source="system", client=client)
+    return result
+
+
 @router.post("/projects/{pid}/rotate-key")
 def rotate_key(pid: int, request: Request, s: Session = Depends(db.get_session)):
     """Invalidate the current connect URL and issue a new one."""
@@ -379,7 +399,8 @@ def run_agents(r: db.Run, phases: list[db.RunPhase]) -> list[dict]:
     """One row per stage agent, in workflow order: planned route, reported model, time and estimated cost."""
     from app import onboarding
     from app.summary import estimate_from_tokens
-    routes = {st["stage"]: st["model"] for st in onboarding.stage_table(r.client if r.client in ("claude", "codex", "copilot") else "claude")}
+    routes = {st["stage"]: st["model"] for st in onboarding.stage_table(r.client if r.client in ("claude", "codex", "copilot") else "claude",
+                                                                         r.routing == "low-cost")}
     rows = []
     for name in onboarding.stage_names():
         mine = [p for p in phases if p.name == name]

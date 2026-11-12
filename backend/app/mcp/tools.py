@@ -90,7 +90,9 @@ def do_start_run(project_id: int, goal: str, client: str = "unknown", repo_url: 
         if repo_url and not project.repo_url:
             project.repo_url = db.normalize_repo_url(repo_url)
         count = len(s.exec(select(db.Run).where(db.Run.project_id == project.id)).all())
-        run = db.Run(project_id=project.id, goal=goal, client=client, number=count + 1, title=short_title(goal, title))
+        low_cost = project.caps.get("routing") == "low-cost"
+        run = db.Run(project_id=project.id, goal=goal, client=client, number=count + 1, title=short_title(goal, title),
+                     routing="low-cost" if low_cost else "standard")
         s.add(run)
         s.commit()
         s.refresh(run)
@@ -103,7 +105,7 @@ def do_start_run(project_id: int, goal: str, client: str = "unknown", repo_url: 
         agents_md = project.agents_md or "(AGENTS.md is being written in the onboarding step above; use it once written.)"
         plan = (f"# Jira-to-PR workflow for run {run.id}\n\nYou are the coordinator. Fetch each stage prompt with `get_stage(name)` "
                 f"when that stage starts; stages and their model routes are listed in `stages`.\n\n"
-                + onboarding.coordinator(ai)
+                + onboarding.coordinator(ai, low_cost)
                 + "\n\n## AGENTS.md (project guide, recorded by the dashboard)\n\n" + agents_md + "\n")
         if needs_onboarding:
             plan = onboarding.onboarding_block(ai, project.name) + "\n" + plan
@@ -115,7 +117,8 @@ def do_start_run(project_id: int, goal: str, client: str = "unknown", repo_url: 
                         "local_path": project.local_path, "has_agents_md": bool(project.agents_md)},
             "ticket_keys": TICKET_KEY_RE.findall(goal),
             "needs_onboarding": needs_onboarding,
-            "stages": onboarding.stage_table(ai),
+            "routing": "low-cost" if low_cost else "standard",
+            "stages": onboarding.stage_table(ai, low_cost),
             "plan": plan,
         }
 

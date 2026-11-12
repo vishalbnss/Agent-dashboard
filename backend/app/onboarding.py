@@ -24,6 +24,10 @@ STAGES = [  # (name, model, reasoning)
     ("documentation", "haiku", "low"),
     ("pr-creation", "sonnet", "medium"),
 ]
+# Low-cost test mode: cheapest model for the mechanical stages, the mid model for the rest; no top-tier model by default.
+LOW_COST = {"branch-preflight": ("haiku", "low"), "jira-intake": ("haiku", "low"), "figma-intake": ("sonnet", "medium"),
+            "dependency-merge": ("sonnet", "medium"), "implementation": ("sonnet", "medium"), "independent-test": ("sonnet", "medium"),
+            "code-review-security": ("sonnet", "medium"), "documentation": ("haiku", "low"), "pr-creation": ("haiku", "low")}
 CODEX_MODELS = {"haiku": "gpt-5.6-luna", "sonnet": "gpt-5.6-terra", "opus": "gpt-5.6-sol"}
 EXTRAS = {"extract-codex-telemetry": "codex/extract-codex-telemetry.mjs", "planning-rates": "codex/planning-rates.md"}
 ONBOARD_PHASES = {"onboard-reading": "reading", "onboard-preparing": "preparing", "onboard-writing": "writing"}
@@ -81,8 +85,25 @@ def _codex_variant(text: str) -> str:
     return text
 
 
-def coordinator(ai: str) -> str:
+def routes(low_cost: bool = False) -> list[tuple[str, str, str]]:
+    return [(n, *LOW_COST[n]) if low_cost else (n, m, r) for n, m, r in STAGES]
+
+
+def _low_cost_variant(text: str) -> str:
+    """Rewrite the coordinator's routing table and downgrade rule for low-cost test mode."""
+    import re
+    for i, (_, m, r) in enumerate(routes(True), 1):
+        text = re.sub(rf"(?m)^(\| {i:02d} — [^|]+\| )`\w+` \| `\w+` \|$", rf"\g<1>`{m}` | `{r}` |", text)
+    return text.replace(
+        "Do not downgrade Stages 03–05 below Opus. Tests/review may retry with Opus. Stop if Opus cannot complete its assigned stage.",
+        "This project runs in **low-cost test mode**: use the routes above as given. Escalate one step (`haiku` → `sonnet` → `opus`) "
+        "only after a recorded capability failure, and record it. Stop if the escalated model cannot complete the stage.")
+
+
+def coordinator(ai: str, low_cost: bool = False) -> str:
     text = (AGENTS_DIR / "coordinator.md").read_text(encoding="utf-8")
+    if low_cost:
+        text = _low_cost_variant(text)
     if ai == "copilot":
         return copilot.variant(text)
     return _codex_variant(text) if ai == "codex" else text
@@ -107,12 +128,12 @@ def stage_prompt(name: str, ai: str) -> str | None:
     return None
 
 
-def stage_table(ai: str) -> list[dict]:
+def stage_table(ai: str, low_cost: bool = False) -> list[dict]:
     """What start_run announces: the stages, their model route, and how to fetch each prompt."""
     return [{"stage": n, "order": i, "model": "selected Copilot model" if ai == "copilot" else CODEX_MODELS[m] if ai == "codex" else m,
              "reasoning": "host setting" if ai == "copilot" else r,
              "prompt": f'get_stage("{n}", run_id=run_id)' if ai == "copilot" else f'get_stage("{n}")'}
-            for i, (n, m, r) in enumerate(STAGES, 1)]
+            for i, (n, m, r) in enumerate(routes(low_cost), 1)]
 
 
 def onboarding_block(ai: str, project_name: str) -> str:

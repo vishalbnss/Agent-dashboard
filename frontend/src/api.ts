@@ -4,7 +4,7 @@ export type Project = {
 };
 export type Integration = { id: number; kind: string; config: Record<string, unknown>; has_secret: boolean };
 export type Ticket = { id: number; key: string; title: string; body_md: string; source: string };
-export type ProjectDetail = Project & { caps: Record<string, number>; integrations: Integration[]; tickets: Ticket[]; connect: { setup_ps: string; setup_sh: string; copilot: string; copilot_url: string; copilot_server_name: string; copilot_json: string; download_copilot: string; download_copilot_agent: string; vscode_json: string; download_vscode: string; url: string; claude: string; codex: string; mcp_json: string; codex_toml: string; download_claude: string; download_codex: string; oneliner_claude_ps: string; oneliner_claude_sh: string; oneliner_codex_ps: string; oneliner_codex_sh: string } };
+export type ProjectDetail = Project & { caps: Record<string, string | number>; integrations: Integration[]; tickets: Ticket[]; connect: { setup_ps: string; setup_sh: string; copilot: string; copilot_url: string; copilot_server_name: string; copilot_json: string; download_copilot: string; download_copilot_agent: string; vscode_json: string; download_vscode: string; url: string; claude: string; codex: string; mcp_json: string; codex_toml: string; download_claude: string; download_codex: string; oneliner_claude_ps: string; oneliner_claude_sh: string; oneliner_codex_ps: string; oneliner_codex_sh: string } };
 export type Phase = { id: number; name: string; status: string; notes: string; ts: string };
 export type Approval = { id: number; run_id: number; version: number; content_md: string; status: string; decided_by: string; comment: string; section_comments: Record<string, string>; created_at: string; decided_at: string | null };
 /* one row of a project's Approvals tab: no document text, plus which run it belongs to */
@@ -14,7 +14,7 @@ export type RunTicket = { key: string; title: string; figma_urls: string[] };
 export type RunAgent = { stage: string; planned_model: string; model: string; tokens: number | null; started_at: string | null; ended_at: string | null; duration_ms: number | null; duration_source: string; est_cost_usd: number | null };
 export type Run = {
   id: number; project_id: number; number: number; goal: string; title: string; project_name?: string; client: string; status: string; branch: string; pr_url: string;
-  summary_md: string; started_at: string; finished_at: string | null; usage: Record<string, number | string>;
+  routing?: string; summary_md: string; started_at: string; finished_at: string | null; usage: Record<string, number | string>;
   phases?: Phase[];
   approvals?: Approval[];
   tickets?: RunTicket[];
@@ -35,7 +35,7 @@ export const api = {
   projects: () => req<Project[]>("/projects"),
   project: (id: number) => req<ProjectDetail>(`/projects/${id}`),
   createProject: (name: string, repo_url = "") => req<Project>("/projects", { method: "POST", body: JSON.stringify({ name, repo_url }) }),
-  patchProject: (id: number, body: Partial<{ name: string; agents_md: string; caps: Record<string, number>; repo_url: string; local_path: string; setup_complete: boolean }>) =>
+  patchProject: (id: number, body: Partial<{ name: string; agents_md: string; caps: Record<string, string | number>; repo_url: string; local_path: string; setup_complete: boolean }>) =>
     req<Project>(`/projects/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteProject: (id: number) => req<void>(`/projects/${id}`, { method: "DELETE" }),
   putIntegration: (pid: number, kind: string, config: Record<string, string>, secret: string) =>

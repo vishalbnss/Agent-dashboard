@@ -111,6 +111,7 @@ class Run(SQLModel, table=True):
     number: int = 0           # 1, 2, 3 ... within the project (ids are global)
     client: str = "unknown"
     status: str = "running"  # running | awaiting_approval | done | failed | stopped
+    routing: str = "standard"  # standard | low-cost, fixed when the run starts
     branch: str = ""
     pr_url: str = ""
     usage_json: str = "{}"

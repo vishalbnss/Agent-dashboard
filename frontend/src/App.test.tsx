@@ -9,7 +9,7 @@ vi.mock("./api", () => ({ api: {
   createProject: vi.fn(), deleteProject: vi.fn(), decide: vi.fn(), rotateKey: vi.fn(),
   authorizeUrl: vi.fn((kind: string, id: number) => `/api/oauth/${kind}/authorize?project=${id}`),
   deleteIntegration: vi.fn(),
-  createTicket: vi.fn(), putTicket: vi.fn(), deleteTicket: vi.fn(), logs: vi.fn(),
+  createTicket: vi.fn(), putTicket: vi.fn(), deleteTicket: vi.fn(), logs: vi.fn(), patchProject: vi.fn(),
 } }));
 
 const timestamp = "2026-10-22T08:30:00Z";
@@ -564,6 +564,16 @@ describe("workspace redesign", () => {
     await waitFor(() => expect(api.logs).toHaveBeenLastCalledWith(1, expect.objectContaining({ level: "error", limit: 100 })));
     await user.click(within(logs).getByRole("button", { name: "Load older" }));
     await waitFor(() => expect(api.logs).toHaveBeenLastCalledWith(1, expect.objectContaining({ limit: 200 })));
+  });
+
+  it("switches a project to low-cost test routing", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.patchProject).mockResolvedValue(projects[0]);
+    openRoute("projects/1/connections");
+    const routing = await screen.findByRole("group", { name: "Model routing" });
+    expect(within(routing).getByRole("button", { name: "Standard" }).getAttribute("aria-pressed")).toBe("true");
+    await user.click(within(routing).getByRole("button", { name: "Low-cost test" }));
+    await waitFor(() => expect(api.patchProject).toHaveBeenCalledWith(1, { caps: { routing: "low-cost" } }));
   });
 
   it("issues a new key from the setup command", async () => {
