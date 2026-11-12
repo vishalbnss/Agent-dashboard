@@ -33,8 +33,10 @@ _pending: dict[str, dict] = {}  # state -> {project_id, provider, verifier, expi
 
 
 def public_url() -> str:
-    """The address people and AIs reach: PUBLIC_BASE_URL, else the URL Render assigns. Empty when neither is set."""
-    return (os.getenv("PUBLIC_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or "").rstrip("/")
+    """The address people and AIs reach: PUBLIC_BASE_URL, else the URL Render or Railway assigns. Empty when none is set.
+    A bare host name gets https://, since hosts redirect http and a redirected POST arrives as a GET."""
+    url = (os.getenv("PUBLIC_BASE_URL") or os.getenv("RENDER_EXTERNAL_URL") or os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip().rstrip("/")
+    return url if not url or "://" in url else f"https://{url}"
 
 
 def base_url() -> str:
