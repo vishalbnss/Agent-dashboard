@@ -8,6 +8,7 @@ import asyncio
 import concurrent.futures
 import json
 import re
+import time
 from pathlib import Path
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -286,10 +287,27 @@ def do_submit_design_document(project_id: int, run_id: int, content_md: str) -> 
                           notes=f"Design document v{a.version} submitted, waiting for approval on the dashboard"))
         s.commit()
         return {"version": a.version, "status": "pending", "rounds_left": MAX_APPROVAL_ROUNDS - a.version,
-                "next": "Call check_approval(run_id) every 20 seconds (sleep in between) until status is approved or changes_requested."}
+                "next": APPROVAL_WAIT_NEXT}
 
 
-def do_check_approval(project_id: int, run_id: int) -> dict:
+APPROVAL_WAIT_SECONDS = 40  # under Codex's default 60 s MCP tool timeout
+APPROVAL_WAIT_NEXT = (f"Call check_approval(run_id) now and again each time it returns pending: it waits up to "
+                      f"{APPROVAL_WAIT_SECONDS} seconds for the decision itself, so do not sleep in the shell, do not end "
+                      "your turn and do not ask the user while it is pending. Continue as soon as it is approved or changes_requested.")
+
+
+def do_check_approval(project_id: int, run_id: int, wait: float = 0) -> dict:
+    """Latest decision. With wait > 0, blocks (call from a worker thread) until a decision or the wait runs out,
+    so the agent's next call happens right after the reviewer clicks, without the agent sleeping."""
+    deadline = time.monotonic() + wait
+    while True:
+        out = _check_approval_once(project_id, run_id)
+        if out["status"] != "pending" or time.monotonic() >= deadline:
+            return out
+        time.sleep(2)
+
+
+def _check_approval_once(project_id: int, run_id: int) -> dict:
     with Session(db.engine) as s:
         run = _run(s, run_id)
         if run.project_id != project_id:
@@ -307,7 +325,7 @@ def do_check_approval(project_id: int, run_id: int) -> dict:
                            if a.version < MAX_APPROVAL_ROUNDS else
                            "No rounds left. Stop the run (finish_run with status stopped) and report the comment to the user.")
         else:
-            out["next"] = "Still waiting. Sleep 20 seconds and call check_approval again."
+            out["next"] = "Still waiting. " + APPROVAL_WAIT_NEXT
         return out
 
 
@@ -483,7 +501,7 @@ def report_connection(kind: str, connected: bool, detail: str = "", client: str 
 @logged
 def submit_design_document(run_id: int, content_md: str, ctx: Context = None) -> dict:
     """Hand in the design document (Markdown) for human approval on the dashboard before any implementation.
-    Then poll check_approval every 20 seconds. Sections: goal, scope of changes (in/out), how the implementation
+    Then call check_approval until it is decided (it waits for the decision itself). Sections: goal, scope of changes (in/out), how the implementation
     will be done (approach, components, files to touch, data/state, mapping to Figma nodes), test plan, risks and
     assumptions, open questions, acceptance-criteria mapping."""
     return do_submit_design_document(_project_id(ctx), run_id, content_md)
@@ -491,10 +509,11 @@ def submit_design_document(run_id: int, content_md: str, ctx: Context = None) ->
 
 @mcp.tool()
 @logged
-def check_approval(run_id: int, ctx: Context = None) -> dict:
+async def check_approval(run_id: int, ctx: Context = None) -> dict:
     """Current decision on the latest design document: pending | approved | changes_requested, with the approver's
-    name and comment. Poll every 20 seconds while pending."""
-    return do_check_approval(_project_id(ctx), run_id)
+    name and comment. Waits up to 40 seconds for a decision before returning pending; call it again right away
+    while pending (no shell sleep, do not end the turn)."""
+    return await asyncio.to_thread(do_check_approval, _project_id(ctx), run_id, APPROVAL_WAIT_SECONDS)
 
 
 @mcp.tool()

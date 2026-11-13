@@ -460,6 +460,16 @@ def test_design_document_approval_gate(client):
     assert rec["status"] == "awaiting_approval" and rec["approvals"][0]["content_md"].startswith("# Design v1")
     assert rec["phases"][-1]["name"] == "design-approval" and rec["phases"][-1]["status"] == "running"
     assert tools.do_check_approval(pid, rid)["status"] == "pending"
+    assert "do not end your turn" in tools.do_check_approval(pid, rid)["next"]
+    # a waiting check returns as soon as the reviewer decides, so the agent never has to sleep or be told "continue"
+    import threading, time as _t
+    wrid = tools.do_start_run(pid, "implement GT-9", "claude")["run_id"]
+    tools.do_submit_design_document(pid, wrid, "# Design")
+    threading.Timer(0.5, lambda: client.post(f"/api/runs/{wrid}/approvals/1/decide",
+                                             json={"decision": "changes_requested", "name": "Priya", "comment": "More"})).start()
+    t0 = _t.monotonic()
+    waited = tools.do_check_approval(pid, wrid, wait=20)
+    assert waited["status"] == "changes_requested" and waited["comment"] == "More" and _t.monotonic() - t0 < 5
     # the PO sends it back
     assert client.post(f"/api/runs/{rid}/approvals/1/decide", json={"decision": "changes_requested", "name": "Priya", "comment": ""}).status_code == 400
     d = client.post(f"/api/runs/{rid}/approvals/1/decide", json={"decision": "changes_requested", "name": "Priya", "comment": "Add the empty state"}).json()
@@ -709,7 +719,8 @@ def test_run_agents_report_model_time_and_cost_in_workflow_order(client):
     assert client.get(f"/api/runs/{crid}").json()["agents"][0]["est_cost_usd"] is None
 
 
-def test_logs_record_mcp_tool_calls_and_dashboard_actions(client):
+def test_logs_record_mcp_tool_calls_and_dashboard_actions(client, monkeypatch):
+    monkeypatch.setattr(tools, "APPROVAL_WAIT_SECONDS", 0.1)  # check_approval would otherwise wait 40 s while pending
     pid = client.post("/api/projects", json={"name": "Logs project"}).json()["id"]
     url = f"/mcp?project={pid}&key={_key(pid)}"
     init = {**INIT, "params": {**INIT["params"], "clientInfo": {"name": "claude-code", "version": "2"}}}

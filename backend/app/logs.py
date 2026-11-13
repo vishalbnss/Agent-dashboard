@@ -95,20 +95,18 @@ def logged(fn):
     """Wrap an MCP tool so every call is logged with its outcome and duration. Keeps the signature for the MCP schema."""
     sig = inspect.signature(fn)
 
-    @functools.wraps(fn)
-    def wrapper(*args, **kwargs):
+    def start(args, kwargs):
         bound = sig.bind_partial(*args, **kwargs)
         a = {k: v for k, v in bound.arguments.items() if k != "ctx"}
-        pid, hint = _context(bound.arguments.get("ctx"))
-        t0 = time.perf_counter()
-        try:
-            result = fn(*args, **kwargs)
-        except Exception as e:
-            if pid:
-                record(pid, fn.__name__, f"{fn.__name__} failed: {e}", level="error", source="mcp",
-                       run_id=a.get("run_id"), client=_client(pid, a.get("run_id"), hint), detail={"args": a},
-                       duration_ms=int((time.perf_counter() - t0) * 1000))
-            raise
+        return (a, *_context(bound.arguments.get("ctx")), time.perf_counter())
+
+    def failed(e, a, pid, hint, t0):
+        if pid:
+            record(pid, fn.__name__, f"{fn.__name__} failed: {e}", level="error", source="mcp",
+                   run_id=a.get("run_id"), client=_client(pid, a.get("run_id"), hint), detail={"args": a},
+                   duration_ms=int((time.perf_counter() - t0) * 1000))
+
+    def done(result, a, pid, hint, t0):
         if pid:
             level, msg = _message(fn.__name__, a, result)
             run_id = a.get("run_id") or (result.get("run_id") if isinstance(result, dict) else None)
@@ -116,5 +114,27 @@ def logged(fn):
                    client=_client(pid, run_id, hint), detail={"args": a, "result": result},
                    duration_ms=int((time.perf_counter() - t0) * 1000))
         return result
+
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def awrapper(*args, **kwargs):
+            st = start(args, kwargs)
+            try:
+                result = await fn(*args, **kwargs)
+            except Exception as e:
+                failed(e, *st)
+                raise
+            return done(result, *st)
+        return awrapper
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        st = start(args, kwargs)
+        try:
+            result = fn(*args, **kwargs)
+        except Exception as e:
+            failed(e, *st)
+            raise
+        return done(result, *st)
 
     return wrapper
