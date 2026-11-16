@@ -923,6 +923,13 @@ def test_developers_see_only_their_projects_and_the_admin_reads_everything(clien
     assert rid in [r["id"] for r in client.get("/api/runs", headers=admin).json()]
     assert client.post(f"/api/runs/{rid}/stop", headers=admin).status_code == 403
     assert client.post("/api/projects", json={"name": "x"}, headers=admin).status_code == 403
+    # the MCP URL names the developer next to the project; the name must match the owner
+    url = client.get(f"/api/projects/{mine['id']}", headers=rakesh).json()["connect"]["url"]
+    assert url.endswith("&user=rakesh") and f"project={mine['id']}&key=" in url
+    mcp_path = url[url.index("/mcp"):]
+    assert client.post(mcp_path, headers=MCP_HEADERS, json=INIT).status_code == 200
+    assert client.post(mcp_path.replace("user=rakesh", "user=vishal"), headers=MCP_HEADERS, json=INIT).status_code == 401
+    assert client.post(mcp_path.replace("&user=rakesh", ""), headers=MCP_HEADERS, json=INIT).status_code == 200  # older configs
     # the developer is named on the run, on every log line, and in what the AI is told
     assert client.get(f"/api/runs/{rid}", headers=rakesh).json()["started_by"] == "rakesh"
     assert tools.do_get_connection_status(mine["id"])["developer"] == "rakesh"

@@ -12,9 +12,10 @@ Nothing here touches the developer's files: the server may run on another machin
 """
 import json
 import re
+import secrets
 import tomllib
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 from sqlmodel import Session
 
@@ -26,7 +27,10 @@ CLIENT_HEADER = b"x-agents-client"
 
 
 def connect_url(project: db.Project, base: str = "http://localhost:8000") -> str:
-    return f"{base}/mcp?project={project.id}&key={project.key}"
+    """project + key authenticate; user names the developer it belongs to (checked against the owner, so a URL
+    edited to another name is refused). It follows the key so scripts matching "project=..&key=.." still work."""
+    user = f"&user={quote(project.owner)}" if project.owner else ""
+    return f"{base}/mcp?project={project.id}&key={project.key}{user}"
 
 
 FIGMA_MCP_URL = "https://mcp.figma.com/mcp"  # Figma only lets approved AI tools sign in, so the AI connects it, not the dashboard
@@ -281,12 +285,16 @@ def ai_from_client(name: str) -> str:
 def authenticate(query_string: bytes) -> int | None:
     """Return the project id when project+key in the query string are valid, else None."""
     q = parse_qs(query_string.decode(errors="replace"))
-    pid, key = q.get("project", [None])[0], q.get("key", [None])[0]
+    pid, key, user = q.get("project", [None])[0], q.get("key", [None])[0], q.get("user", [None])[0]
     if not pid or not pid.isdigit() or not key:
         return None
     with Session(db.engine) as s:
         p = s.get(db.Project, int(pid))
-        return p.id if p and p.key == key else None
+        if not p or not secrets.compare_digest(p.key or "", key):
+            return None
+        if user is not None and user.lower() != p.owner:  # URLs from before sign-in have no user and still work
+            return None
+        return p.id
 
 
 def mark_connected(project_id: int, client_name: str, client_hint: str = "") -> None:
