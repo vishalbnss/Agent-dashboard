@@ -14,7 +14,7 @@ export type RunTicket = { key: string; title: string; figma_urls: string[] };
 export type RunAgent = { stage: string; planned_model: string; model: string; tokens: number | null; started_at: string | null; ended_at: string | null; duration_ms: number | null; duration_source: string; est_cost_usd: number | null };
 export type Run = {
   id: number; project_id: number; number: number; goal: string; title: string; project_name?: string; client: string; status: string; branch: string; pr_url: string;
-  routing?: string; project_owner?: string; summary_md: string; started_at: string; finished_at: string | null; usage: Record<string, number | string>;
+  routing?: string; project_owner?: string; started_by?: string; summary_md: string; started_at: string; finished_at: string | null; usage: Record<string, number | string>;
   phases?: Phase[];
   documents?: DocumentRow[];
   tickets?: RunTicket[];
@@ -23,7 +23,7 @@ export type Run = {
 };
 
 /* one line of a project's Logs tab */
-export type LogEntry = { id: number; project_id: number; run_id: number | null; run_number: number | null; ts: string; level: "debug" | "info" | "warn" | "error"; source: "mcp" | "dashboard" | "system"; event: string; client: string; message: string; detail: Record<string, unknown>; duration_ms: number | null };
+export type LogEntry = { id: number; project_id: number; run_id: number | null; run_number: number | null; ts: string; level: "debug" | "info" | "warn" | "error"; source: "mcp" | "dashboard" | "system"; event: string; client: string; user?: string; message: string; detail: Record<string, unknown>; duration_ms: number | null };
 
 export type User = { name: string; role: "admin" | "developer" };
 

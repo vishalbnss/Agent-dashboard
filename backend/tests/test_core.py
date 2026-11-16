@@ -74,7 +74,7 @@ def test_copilot_connection_and_config(client):
         assert result["isError"] is False
         return result.get("structuredContent") or json.loads(result["content"][0]["text"])
     assert call("get_connection_status", {}) == {"connected": True, "project_id": pid,
-        "project_name": "Copilot project", "client": "copilot", "has_agents_md": False}
+        "project_name": "Copilot project", "developer": "", "client": "copilot", "has_agents_md": False}
     assert client.get(f"/api/projects/{pid}").json() == p  # no status probe side effects
     assert client.get(f"/api/runs?project_id={pid}").json() == []
     call("report_connection", {"kind": "figma", "connected": True, "detail": "Read succeeded"})
@@ -923,5 +923,13 @@ def test_developers_see_only_their_projects_and_the_admin_reads_everything(clien
     assert rid in [r["id"] for r in client.get("/api/runs", headers=admin).json()]
     assert client.post(f"/api/runs/{rid}/stop", headers=admin).status_code == 403
     assert client.post("/api/projects", json={"name": "x"}, headers=admin).status_code == 403
+    # the developer is named on the run, on every log line, and in what the AI is told
+    assert client.get(f"/api/runs/{rid}", headers=rakesh).json()["started_by"] == "rakesh"
+    assert tools.do_get_connection_status(mine["id"])["developer"] == "rakesh"
+    assert tools.do_start_run(mine["id"], "implement R-2", "claude")["developer"] == "rakesh"
+    connect.mark_connected(mine["id"], "claude-code")
+    logs = client.get(f"/api/projects/{mine['id']}/logs", headers=rakesh).json()["items"]
+    assert logs and {e["user"] for e in logs} == {"rakesh"}
+    assert logs[0]["message"] == "Claude Code connected to the dashboard as rakesh"
     assert client.post(f"/api/runs/{rid}/stop", headers=rakesh).status_code == 200
     assert client.post("/api/auth/logout", headers=rakesh).status_code == 200

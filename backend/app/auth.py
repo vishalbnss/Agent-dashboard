@@ -106,6 +106,11 @@ def claim_unowned() -> None:
             p.owner = devs[0]
             s.add(p)
         s.commit()
+        for r in s.exec(select(db.Run).where(db.Run.started_by == "")).all():  # older runs: their project's owner
+            if (p := s.get(db.Project, r.project_id)) and p.owner:
+                r.started_by = p.owner
+                s.add(r)
+        s.commit()
 
 
 # ---- the gate in front of /api ----

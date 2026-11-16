@@ -589,7 +589,7 @@ function RunPage({ id }: { id: number }) {
         {r.routing === "low-cost" && <span><strong>Models</strong> <span className="tag warn">Low-cost test mode</span></span>}
         {r.branch && <span><strong>Branch</strong> {r.branch}</span>}
         {r.pr_url && <span><a href={r.pr_url} target="_blank">Open pull request</a></span>}
-        {r.project_owner && <span><strong>Owner</strong> {r.project_owner}</span>}
+        {(r.started_by || r.project_owner) && <span><strong>Started by</strong> {r.started_by || r.project_owner}</span>}
         {live && !readOnly && <StopRun run={r} onStopped={reload} />}
       </div>
       <div className="grid run-detail-grid">

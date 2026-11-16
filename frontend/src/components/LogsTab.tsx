@@ -58,7 +58,7 @@ export function LogsTab({ projectId, runs }: { projectId: number; runs: Run[] })
                   <summary>
                     <time dateTime={e.ts} title={utc(e.ts).toLocaleString()}>{when(e.ts)}</time>
                     <span className={`log-level ${e.level}`}>{e.level}</span>
-                    <span className="log-who">{who(e)}</span>
+                    <span className="log-who">{who(e)}{e.user && <small className="log-user"> · {e.user}</small>}</span>
                     <span className="log-msg">{e.message}</span>
                     {e.run_number != null && <a className="log-run" href={`#/runs/${e.run_id}`} onClick={(ev) => ev.stopPropagation()}>Run #{e.run_number}</a>}
                     {e.duration_ms != null && <span className="log-ms">{e.duration_ms} ms</span>}

@@ -30,10 +30,12 @@ def _trim(v, limit: int = 300):
 
 def record(project_id: int, event: str, message: str, *, level: str = "info", source: str = "dashboard",
            run_id: int | None = None, client: str = "", detail: dict | None = None, duration_ms: int | None = None) -> None:
-    """Write one log row. Never raises: logging must not break the action it describes."""
+    """Write one log row. Never raises: logging must not break the action it describes.
+    Every row names its developer: the project's owner, whose AI (project key) or dashboard session caused it."""
     try:
         with Session(db.engine) as s:
-            s.add(db.LogEntry(project_id=project_id, run_id=run_id, level=level if level in LEVELS else "info",
+            p = s.get(db.Project, project_id)
+            s.add(db.LogEntry(project_id=project_id, run_id=run_id, level=level if level in LEVELS else "info", user=p.owner if p else "",
                               source=source, event=event, client=client, message=message[:500],
                               detail_json=json.dumps(_trim(detail or {}), default=str)[:8000], duration_ms=duration_ms))
             s.commit()

@@ -301,11 +301,12 @@ def mark_connected(project_id: int, client_name: str, client_hint: str = "") -> 
         if ai != "unknown":
             p.ai = ai
             setattr(p, f"{ai}_connected_at", p.connected_at)
+        owner = p.owner
         s.add(p)
         s.commit()
     from app.logs import record
     label = {"claude": "Claude Code", "codex": "Codex", "copilot": "GitHub Copilot"}.get(ai, client_name or "An AI client")
-    record(project_id, "connected", f"{label} connected to the dashboard", source="system",
+    record(project_id, "connected", f"{label} connected to the dashboard" + (f" as {owner}" if owner else ""), source="system",
            client=ai if ai != "unknown" else "", detail={"client_info": client_name})
 
 

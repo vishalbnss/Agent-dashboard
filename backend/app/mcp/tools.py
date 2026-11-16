@@ -99,7 +99,7 @@ def do_start_run(project_id: int, goal: str, client: str = "unknown", repo_url: 
             project.repo_url = db.normalize_repo_url(repo_url)
         count = len(s.exec(select(db.Run).where(db.Run.project_id == project.id)).all())
         low_cost = project.caps.get("routing") == "low-cost"
-        run = db.Run(project_id=project.id, goal=goal, client=client, number=count + 1, title=short_title(goal, title),
+        run = db.Run(project_id=project.id, goal=goal, client=client, number=count + 1, title=short_title(goal, title), started_by=project.owner,
                      routing="low-cost" if low_cost else "standard")
         s.add(run)
         s.commit()
@@ -121,6 +121,7 @@ def do_start_run(project_id: int, goal: str, client: str = "unknown", repo_url: 
             plan = plan.replace("`get_stage(name)`", "`get_stage(name, run_id=run_id)`")
         return {
             "run_id": run.id,
+            "developer": project.owner,  # the dashboard user this connection belongs to
             "project": {"id": project.id, "name": project.name, "repo_url": project.repo_url,
                         "local_path": project.local_path, "has_agents_md": bool(project.agents_md)},
             "ticket_keys": ticket_keys(s, project.id, goal),
@@ -153,7 +154,7 @@ def do_get_connection_status(project_id: int, client_hint: str = "") -> dict:
         project = s.get(db.Project, project_id)
         if not project:
             raise ValueError("Unknown project")
-        return {"connected": True, "project_id": project.id, "project_name": project.name,
+        return {"connected": True, "project_id": project.id, "project_name": project.name, "developer": project.owner,
                 "client": client_hint or project.ai or "unknown", "has_agents_md": bool(project.agents_md)}
 
 
