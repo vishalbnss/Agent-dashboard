@@ -1,6 +1,6 @@
 export type Project = {
   latest_run?: Run | null;
-  id: number; name: string; repo_url: string; local_path: string; agents_md: string; caps_json: string; ai: string; connected_at: string | null; claude_connected_at: string | null; codex_connected_at: string | null; copilot_connected_at: string | null; setup_complete: boolean; onboarding_status: string; onboarding_stage: string; onboarding_log: string; created_at: string;
+  id: number; name: string; owner?: string; repo_url: string; local_path: string; agents_md: string; caps_json: string; ai: string; connected_at: string | null; claude_connected_at: string | null; codex_connected_at: string | null; copilot_connected_at: string | null; setup_complete: boolean; onboarding_status: string; onboarding_stage: string; onboarding_log: string; created_at: string;
 };
 export type Integration = { id: number; kind: string; config: Record<string, unknown>; has_secret: boolean };
 export type Ticket = { id: number; key: string; title: string; body_md: string; source: string };
@@ -14,7 +14,7 @@ export type RunTicket = { key: string; title: string; figma_urls: string[] };
 export type RunAgent = { stage: string; planned_model: string; model: string; tokens: number | null; started_at: string | null; ended_at: string | null; duration_ms: number | null; duration_source: string; est_cost_usd: number | null };
 export type Run = {
   id: number; project_id: number; number: number; goal: string; title: string; project_name?: string; client: string; status: string; branch: string; pr_url: string;
-  routing?: string; summary_md: string; started_at: string; finished_at: string | null; usage: Record<string, number | string>;
+  routing?: string; project_owner?: string; summary_md: string; started_at: string; finished_at: string | null; usage: Record<string, number | string>;
   phases?: Phase[];
   documents?: DocumentRow[];
   tickets?: RunTicket[];
@@ -25,14 +25,20 @@ export type Run = {
 /* one line of a project's Logs tab */
 export type LogEntry = { id: number; project_id: number; run_id: number | null; run_number: number | null; ts: string; level: "debug" | "info" | "warn" | "error"; source: "mcp" | "dashboard" | "system"; event: string; client: string; message: string; detail: Record<string, unknown>; duration_ms: number | null };
 
+export type User = { name: string; role: "admin" | "developer" };
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`/api${path}`, { headers: { "Content-Type": "application/json" }, ...init });
+  if (r.status === 401 && !path.startsWith("/auth/")) dispatchEvent(new Event("auth-required"));  // session ended
   if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
   return r.status === 204 ? (undefined as T) : r.json();
 }
 
 export const api = {
-  projects: () => req<Project[]>("/projects"),
+  me: () => req<{ auth: boolean; user: User | null }>("/auth/me"),
+  login: (username: string, password: string) => req<{ auth: boolean; user: User | null }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
+  logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+  projects:() => req<Project[]>("/projects"),
   project: (id: number) => req<ProjectDetail>(`/projects/${id}`),
   createProject: (name: string, repo_url = "") => req<Project>("/projects", { method: "POST", body: JSON.stringify({ name, repo_url }) }),
   patchProject: (id: number, body: Partial<{ name: string; agents_md: string; caps: Record<string, string | number>; repo_url: string; local_path: string; setup_complete: boolean }>) =>

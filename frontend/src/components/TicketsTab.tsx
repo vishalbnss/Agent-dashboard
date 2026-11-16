@@ -39,7 +39,7 @@ function TicketEditor({ projectId, ticket, tickets, onClose, onSaved }: {
   </Dialog>;
 }
 
-export function TicketsTab({ projectId, tickets, onChanged }: { projectId: number; tickets: Ticket[]; onChanged: () => void }) {
+export function TicketsTab({ projectId, tickets, onChanged, readOnly = false }: { projectId: number; tickets: Ticket[]; onChanged: () => void; readOnly?: boolean }) {
   const [editor, setEditor] = useState<{ ticket: Ticket | null } | null>(null);
   const [deleting, setDeleting] = useState<number | null>(null);
   const [copied, setCopied] = useState<number | null>(null);
@@ -56,7 +56,7 @@ export function TicketsTab({ projectId, tickets, onChanged }: { projectId: numbe
     catch { setError(`Could not copy. In your connected AI, type: Implement ${ticket.key} and review it.`); }
   };
   return <section aria-label="Project tickets">
-    <div className="section-heading"><div><h2>Tickets</h2><p>Add requirements here, then ask your connected AI to implement the ticket ID.</p></div><button onClick={() => setEditor({ ticket: null })}><Icon name="plus" /> Add ticket</button></div>
+    <div className="section-heading"><div><h2>Tickets</h2><p>Add requirements here, then ask your connected AI to implement the ticket ID.</p></div>{!readOnly && <button onClick={() => setEditor({ ticket: null })}><Icon name="plus" /> Add ticket</button>}</div>
     {error && <p className="err" role="alert">{error}</p>}
     {!tickets.length ? <EmptyState title="No tickets yet" icon="document" /> : <div className="ticket-list">
       {tickets.map((ticket) => <article className="ticket-card" key={ticket.id} aria-labelledby={`ticket-title-${ticket.id}`}>
@@ -65,8 +65,8 @@ export function TicketsTab({ projectId, tickets, onChanged }: { projectId: numbe
         <details className="ticket-details"><summary>View details</summary><div className="ticket-body">{ticket.body_md}</div></details>
         <div className="ticket-actions">
           <button className="secondary" onClick={() => copy(ticket)}>{copied === ticket.id ? "Copied" : "Copy request"}</button>
-          {ticket.source !== "jira" && <button className="link" onClick={() => setEditor({ ticket })}>Edit</button>}
-          <button className="link" disabled={deleting !== null} onClick={() => remove(ticket)}>{deleting === ticket.id ? "Deleting…" : "Delete"}</button>
+          {!readOnly && ticket.source !== "jira" && <button className="link" onClick={() => setEditor({ ticket })}>Edit</button>}
+          {!readOnly && <button className="link" disabled={deleting !== null} onClick={() => remove(ticket)}>{deleting === ticket.id ? "Deleting…" : "Delete"}</button>}
         </div>
       </article>)}
     </div>}

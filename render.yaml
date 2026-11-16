@@ -12,7 +12,7 @@ services:
           property: connectionString
       - key: APP_SECRET            # encrypts stored Jira tokens; keep it stable
         generateValue: true
-      - key: DASHBOARD_PASSWORD    # asked for when you open the dashboard; you type it in during setup
+      - key: DASHBOARD_USERS       # sign-in accounts, e.g. vishal:pass1,rakesh:pass2,admin:pass3:admin
         sync: false
       # PUBLIC_BASE_URL is optional: Render's own URL (RENDER_EXTERNAL_URL) is used when it is not set.
 

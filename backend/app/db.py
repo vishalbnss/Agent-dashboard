@@ -53,6 +53,7 @@ def split_location(location: str) -> tuple[str, str]:
 class Project(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     name: str
+    owner: str = Field(default="", index=True)  # dashboard user who created it (see app/auth.py); "" when sign-in is off
     key: str = Field(default_factory=lambda: secrets.token_urlsafe(24), index=True)  # secret in the connect URL
     repo_url: str = Field(default="", index=True)    # GitHub URL, optional; needed only for pull requests
     local_path: str = Field(default="", index=True)  # folder as reported by the developer's AI (informational)

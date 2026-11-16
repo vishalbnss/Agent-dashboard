@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { Project, Run } from "../api";
 import { Dialog, Icon, type IconName } from "./ui";
+import { useAuth } from "./Auth";
 
 const NAV: { href: string; key: string; label: string; icon: IconName }[] = [
   { href: "#/", key: "", label: "Overview", icon: "overview" },
@@ -12,6 +13,7 @@ const NAV: { href: string; key: string; label: string; icon: IconName }[] = [
 export function AppShell({ active, projects, runs, children }: { active: string; projects: Project[]; runs: Run[]; children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const { user, signOut } = useAuth();
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setSearchOpen((v) => !v); }
@@ -31,7 +33,8 @@ export function AppShell({ active, projects, runs, children }: { active: string;
     <div className="app-workspace">
       <header className="topbar">
         <button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Icon name="menu" /></button>
-        <button className="workspace-search" onClick={() => setSearchOpen(true)} aria-label="Search workspace"><Icon name="search" /><span>Search projects and runs…</span><kbd>{navigator.platform.includes("Mac") ? "⌘" : "Ctrl"} K</kbd></button>      </header>
+        <button className="workspace-search" onClick={() => setSearchOpen(true)} aria-label="Search workspace"><Icon name="search" /><span>Search projects and runs…</span><kbd>{navigator.platform.includes("Mac") ? "⌘" : "Ctrl"} K</kbd></button>
+        {user && <div className="topbar-right user-chip"><span className="user-name">{user.name}</span><span className={`tag ${user.role === "admin" ? "warn" : ""}`}>{user.role === "admin" ? "Admin · read-only" : "Developer"}</span><button className="link" onClick={signOut}>Sign out</button></div>}      </header>
       <main id="main-content" className="main-content" tabIndex={-1}><div className="page-content">{children}</div></main>
     </div>
     {searchOpen && <WorkspaceSearch projects={projects} runs={runs} onClose={() => setSearchOpen(false)} />}

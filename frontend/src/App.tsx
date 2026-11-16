@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type DocumentRow, type Phase, type Project, type ProjectDetail, type Run, type RunAgent } from "./api";
 import { AppShell } from "./components/AppShell";
+import { AuthGate, useAuth } from "./components/Auth";
 import { ProjectSummary, RunSummary } from "./components/ActivitySummary";
 import { Dialog, EmptyState, ErrorNotice, Icon, LoadingState, MetricCard, PageHeader } from "./components/ui";
 import { usePolling } from "./hooks/usePolling";
@@ -28,6 +29,10 @@ const loadWorkspace = async () => {
 };
 
 export default function App() {
+  return <AuthGate><Workspace /></AuthGate>;
+}
+
+function Workspace() {
   const route = useHash();
   const [pathname, query = ""] = route.split("?");
   const [seg, id, sub] = pathname.split("/");
@@ -251,6 +256,7 @@ function AgentFlow() {
 /* ---------- pages ---------- */
 
 function AddProjectForm({ className = "", onCreated }: { className?: string; onCreated?: () => void }) {
+  const { readOnly } = useAuth();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [repo, setRepo] = useState("");
@@ -264,6 +270,7 @@ function AddProjectForm({ className = "", onCreated }: { className?: string; onC
       location.hash = `#/projects/${p.id}`;
     } catch (e) { setErr(String(e)); } finally { setBusy(false); }
   };
+  if (readOnly) return <span className="tag">Admin view · read-only</span>;
   if (!open) return <button className={className} onClick={() => setOpen(true)}><Icon name="plus" />Add project</button>;
   return (
     <Dialog title="Add a project" onClose={() => { if (!busy) setOpen(false); }}>
@@ -295,6 +302,7 @@ function HomePage({ projects, runs }: { projects: Project[]; runs: Run[] }) {
 }
 
 function ProjectsPage({ projects, reload }: { projects: Project[]; reload: () => void }) {
+  const { readOnly, user } = useAuth();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("");
   const [error, setError] = useState("");
@@ -309,7 +317,7 @@ function ProjectsPage({ projects, reload }: { projects: Project[]; reload: () =>
     {error && <ErrorNotice message={error} onRetry={() => setError("")} />}
     <div className="filter-bar"><label className="search-field"><Icon name="search" /><input aria-label="Search projects" placeholder="Search projects…" value={query} onChange={(e) => setQuery(e.target.value)} /></label><select aria-label="Connection status" value={filter} onChange={(e) => setFilter(e.target.value)}><option value="">All connections</option><option value="connected">Connected</option><option value="disconnected">Not connected</option></select><span className="results-count">{visible.length} project{visible.length === 1 ? "" : "s"}</span></div>
     {!projects.length ? <EmptyState title="No projects yet" description="Add a project to connect your coding agent." /> : !visible.length ? <EmptyState title="No matching projects" description="Try another name or connection filter." icon="search" action={<button className="secondary" onClick={() => { setQuery(""); setFilter(""); }}>Clear filters</button>} /> :
-      <ul className="project-cards">{visible.map((p) => <li key={p.id} className="project-card"><div className="project-card-top"><span className="project-symbol"><Icon name="projects" /></span><span className={`tag ${isConnected(p) ? "ok" : ""}`}>{isConnected(p) ? "AI connected" : "Setup needed"}</span><button className="icon-button delete-project" aria-label={`Delete ${p.name}`} onClick={() => remove(p)}><Icon name="close" /></button></div><a className="project-card-title" href={`#/projects/${p.id}`}>{p.name}</a><p className="repo-label" title={p.repo_url || p.local_path}>{p.repo_url ? p.repo_url.replace(/^https?:\/\//, "") : p.local_path || "Repository details appear when your AI connects"}</p><div className="project-clients">{p.claude_connected_at && <span><ConnIcon kind="claude" />Claude Code</span>}{p.codex_connected_at && <span><ConnIcon kind="codex" />Codex</span>}{p.copilot_connected_at && <span><ConnIcon kind="copilot" />GitHub Copilot</span>}{!isConnected(p) && <span><Icon name="connect" />Ready to connect</span>}</div><div className="project-latest"><span className="eyebrow">LATEST ACTIVITY</span>{p.latest_run ? <><a href={`#/runs/${p.latest_run.id}`}>{runTitle(p.latest_run)}</a><RunStatus run={p.latest_run} /></> : <p>{p.agents_md ? "Project guide ready. Start your first run." : "Connect an AI to set up your project guide."}</p>}</div><div className="project-card-footer"><a href={`#/projects/${p.id}`}>Open project <Icon name="arrow" /></a></div></li>)}</ul>}
+      <ul className="project-cards">{visible.map((p) => <li key={p.id} className="project-card"><div className="project-card-top"><span className="project-symbol"><Icon name="projects" /></span><span className={`tag ${isConnected(p) ? "ok" : ""}`}>{isConnected(p) ? "AI connected" : "Setup needed"}</span>{!readOnly && <button className="icon-button delete-project" aria-label={`Delete ${p.name}`} onClick={() => remove(p)}><Icon name="close" /></button>}</div><a className="project-card-title" href={`#/projects/${p.id}`}>{p.name}</a>{user?.role === "admin" && p.owner && <p className="project-owner"><Icon name="projects" />Owner: {p.owner}</p>}<p className="repo-label" title={p.repo_url || p.local_path}>{p.repo_url ? p.repo_url.replace(/^https?:\/\//, "") : p.local_path || "Repository details appear when your AI connects"}</p><div className="project-clients">{p.claude_connected_at && <span><ConnIcon kind="claude" />Claude Code</span>}{p.codex_connected_at && <span><ConnIcon kind="codex" />Codex</span>}{p.copilot_connected_at && <span><ConnIcon kind="copilot" />GitHub Copilot</span>}{!isConnected(p) && <span><Icon name="connect" />Ready to connect</span>}</div><div className="project-latest"><span className="eyebrow">LATEST ACTIVITY</span>{p.latest_run ? <><a href={`#/runs/${p.latest_run.id}`}>{runTitle(p.latest_run)}</a><RunStatus run={p.latest_run} /></> : <p>{p.agents_md ? "Project guide ready. Start your first run." : "Connect an AI to set up your project guide."}</p>}</div><div className="project-card-footer"><a href={`#/projects/${p.id}`}>Open project <Icon name="arrow" /></a></div></li>)}</ul>}
   </>;
 }
 
@@ -327,14 +335,15 @@ function ProjectContent({ p, runs, documents, routeTab, load }: { p: ProjectDeta
   // Pick the default once, so background refreshes never switch the selected tab.
   const [firstTab] = useState<ProjectTab>(() => !(p.claude_connected_at || p.codex_connected_at || p.copilot_connected_at) ? "connections" : "runs");
   const [deleteError, setDeleteError] = useState("");
+  const { readOnly, user } = useAuth();
   const aiOn = p.claude_connected_at || p.codex_connected_at || p.copilot_connected_at;
   const tab = PROJECT_TABS.includes(routeTab as ProjectTab) ? (routeTab as ProjectTab) : firstTab ?? "runs";
   return (
     <>
-      <PageHeader title={p.name} breadcrumbs={[{ label: "Projects", href: "#/projects" }]} actions={<span className={`tag ${aiOn ? "ok" : "warn"}`}>{aiOn ? "AI connected" : "Setup needed"}</span>} />
+      <PageHeader title={p.name} breadcrumbs={[{ label: "Projects", href: "#/projects" }]} actions={<>{user?.role === "admin" && p.owner && <span className="tag">Owner: {p.owner}</span>}<span className={`tag ${aiOn ? "ok" : "warn"}`}>{aiOn ? "AI connected" : "Setup needed"}</span></>} />
       {deleteError && <ErrorNotice message={deleteError} onRetry={() => setDeleteError("")} />}
       <div className="project-context"><span><Icon name="branch" />{p.repo_url || p.local_path || "Repository details will appear after connecting"}</span><span>{runs.length} runs</span><span>{documents.length} documents</span>
-        <RoutingSwitch p={p} onChanged={load} /></div>
+        {readOnly ? <span>Models: {p.caps.routing === "low-cost" ? "Low-cost test" : "Standard"}</span> : <RoutingSwitch p={p} onChanged={load} />}</div>
       <div className="ptabs" role="tablist">
         <a role="tab" aria-selected={tab === "connections"} href={`#/projects/${id}/connections`}>Connections</a>
         <a role="tab" aria-selected={tab === "tickets"} href={`#/projects/${id}/tickets`}>Tickets <span className="count">{p.tickets.length}</span></a>
@@ -343,11 +352,11 @@ function ProjectContent({ p, runs, documents, routeTab, load }: { p: ProjectDeta
         <a role="tab" aria-selected={tab === "logs"} href={`#/projects/${id}/logs`}>Logs</a>
       </div>
       {tab === "connections" && <><div className="section-heading"><h2>Connected tools</h2><a className="text-link" href="#/connect">Setup guide <Icon name="arrow" /></a></div><AgentSetup p={p} onChanged={load} /><ConnectionBoxes p={p} onChanged={load} /></>}
-      {tab === "tickets" && <TicketsTab projectId={id} tickets={p.tickets} onChanged={load} />}
+      {tab === "tickets" && <TicketsTab projectId={id} tickets={p.tickets} onChanged={load} readOnly={readOnly} />}
       {tab === "documents" && <DocumentsTab documents={documents} />}
       {tab === "runs" && <RunsTable runs={runs} />}
       {tab === "logs" && <LogsTab projectId={id} runs={runs} />}
-      <div className="project-danger"><button className="link" onClick={() => { if (confirm("Delete this project and its runs? Your code folder is not touched.")) api.deleteProject(id).then(() => (location.hash = "#/projects")).catch(() => setDeleteError("Could not delete this project. Please try again.")); }}>Delete project</button></div>
+      {!readOnly && <div className="project-danger"><button className="link" onClick={() => { if (confirm("Delete this project and its runs? Your code folder is not touched.")) api.deleteProject(id).then(() => (location.hash = "#/projects")).catch(() => setDeleteError("Could not delete this project. Please try again.")); }}>Delete project</button></div>}
     </>
   );
 }
@@ -441,6 +450,7 @@ function AgentSetup({ p, onChanged }: { p: ProjectDetail; onChanged: () => void 
   const [shell, setShell] = useState<"ps" | "sh">(navigator.platform.startsWith("Win") ? "ps" : "sh");
   const [file, setFile] = useState("claude");
   const [rotating, setRotating] = useState(false);
+  const { readOnly } = useAuth();
   const rotate = async () => { if (!confirm("Issue a new key? The current setup command and config files stop working.")) return; setRotating(true); try { await api.rotateKey(p.id); onChanged(); } finally { setRotating(false); } };
   const agents: [ConnKind, string, string | null][] = [["claude", "Claude Code", p.claude_connected_at], ["codex", "Codex", p.codex_connected_at], ["copilot", "GitHub Copilot", p.copilot_connected_at]];
   const cmd = shell === "ps" ? c.setup_ps : c.setup_sh;
@@ -471,7 +481,7 @@ function AgentSetup({ p, onChanged }: { p: ProjectDetail; onChanged: () => void 
       {method === "cli" && <div className="setup-cli">
         {cli.map(([label, text]) => <div key={label}><span>{label}</span><div className="setup-cmd"><code>{text}</code><CopyButton text={text} /></div></div>)}
       </div>}
-      <button className="link setup-key" disabled={rotating} onClick={rotate}>Issue a new key</button>
+      {!readOnly && <button className="link setup-key" disabled={rotating} onClick={rotate}>Issue a new key</button>}
     </section>
   );
 }
@@ -495,15 +505,17 @@ function runTitle(r: Run) {
 }
 
 function RunsTable({ runs, showProject = false }: { runs: Run[]; showProject?: boolean }) {
+  const showOwner = useAuth().user?.role === "admin";
   if (!runs.length) return <EmptyState title="No runs yet" description="Start a run from your connected coding agent." icon="runs" />;
   return (
     <div className="table-scroll" role="region" aria-label="Run history" tabIndex={0}>
     <table className="runs">
-      <thead><tr><th>Run</th>{showProject && <th>Project</th>}<th>Goal</th><th>Status</th><th>Started</th><th>Duration</th><th>Cost</th><th>PR</th></tr></thead>
+      <thead><tr><th>Run</th>{showProject && <th>Project</th>}{showOwner && <th>Owner</th>}<th>Goal</th><th>Status</th><th>Started</th><th>Duration</th><th>Cost</th><th>PR</th></tr></thead>
       <tbody>{runs.map((r) => (
         <tr key={r.id}>
           <td><a href={`#/runs/${r.id}`}>#{r.number || r.id}</a></td>
           {showProject && <td><a href={`#/projects/${r.project_id}`}>{r.project_name || r.project_id}</a></td>}
+          {showOwner && <td>{r.project_owner || "–"}</td>}
           <td><a className="run-title" href={`#/runs/${r.id}`} title={r.goal}>{runTitle(r)}</a><span className="muted" style={{ fontSize: 12 }}> · {AI_LABEL[r.client] ?? r.client}</span></td>
           <td><RunStatus run={r} /></td>
           <td>{utc(r.started_at).toLocaleString()}</td><td>{duration(r)}</td>
@@ -542,6 +554,7 @@ function duration(r: Run) {
 function RunPage({ id }: { id: number }) {
   const fetcher = useCallback(() => api.run(id), [id]);
   const { data: r, error, reload } = usePolling(fetcher, 4000);
+  const { readOnly } = useAuth();
   if (!r) return error ? <ErrorNotice message={error} onRetry={reload} /> : <LoadingState />;
   const phases: Phase[] = r.phases ?? [];
   const preview = isCompletedPreview(r);
@@ -576,7 +589,8 @@ function RunPage({ id }: { id: number }) {
         {r.routing === "low-cost" && <span><strong>Models</strong> <span className="tag warn">Low-cost test mode</span></span>}
         {r.branch && <span><strong>Branch</strong> {r.branch}</span>}
         {r.pr_url && <span><a href={r.pr_url} target="_blank">Open pull request</a></span>}
-        {live && <StopRun run={r} onStopped={reload} />}
+        {r.project_owner && <span><strong>Owner</strong> {r.project_owner}</span>}
+        {live && !readOnly && <StopRun run={r} onStopped={reload} />}
       </div>
       <div className="grid run-detail-grid">
         <Roster run={r} title={title} subtitle={sub} />

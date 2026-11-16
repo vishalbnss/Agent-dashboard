@@ -748,17 +748,25 @@ def test_logs_record_mcp_tool_calls_and_dashboard_actions(client, monkeypatch):
     assert client.delete(f"/api/projects/{pid}").status_code == 204
 
 
-def test_hosting_password_gate_secret_and_database_url(client, monkeypatch):
-    import base64 as b64
+def _sign_in(client, name, password):
+    r = client.post("/api/auth/login", json={"username": name, "password": password})
+    assert r.status_code == 200, r.text
+    client.cookies.clear()  # send the session explicitly, whatever the cookie's Secure flag
+    return {"Cookie": f"ad_session={r.cookies.get('ad_session')}"}
+
+
+def test_hosting_sign_in_secret_and_database_url(client, monkeypatch):
     pid = client.post("/api/projects", json={"name": "Hosted"}).json()["id"]
     key = _key(pid)
-    monkeypatch.setenv("DASHBOARD_PASSWORD", "s3cret")
-    basic = lambda pw: {"Authorization": "Basic " + b64.b64encode(f"anyone:{pw}".encode()).decode()}
-    r = client.get("/api/projects")
-    assert r.status_code == 401 and r.headers["www-authenticate"].startswith("Basic")
-    assert client.get("/api/projects", headers=basic("wrong")).status_code == 401
-    assert client.get("/api/projects", headers=basic("s3cret")).status_code == 200
-    # key-protected and machine endpoints stay reachable without the password
+    monkeypatch.setenv("DASHBOARD_USERS", "vishal:pw:with:colons,admin:adm:admin")
+    assert client.get("/api/auth/me").json() == {"auth": True, "user": None}
+    assert client.get("/api/projects").status_code == 401
+    assert client.post("/api/auth/login", json={"username": "vishal", "password": "wrong"}).status_code == 401
+    me = _sign_in(client, "Vishal", "pw:with:colons")  # a password may contain ':'
+    assert client.get("/api/auth/me", headers=me).json() == {"auth": True, "user": {"name": "vishal", "role": "developer"}}
+    assert client.get("/api/projects", headers=me).status_code == 200
+    assert client.get("/api/projects", headers={"Cookie": "ad_session=vishal.9999999999.forged"}).status_code == 401
+    # key-protected and machine endpoints stay reachable without signing in
     assert client.get("/api/health").json() == {"ok": True}
     assert client.get(f"/api/projects/{pid}/setup?key={key}").status_code == 200
     assert client.post(f"/api/projects/{pid}/setup-file?key={key}&client=claude", content=b"").status_code == 200
@@ -766,6 +774,14 @@ def test_hosting_password_gate_secret_and_database_url(client, monkeypatch):
     assert client.post(f"/mcp?project={pid}&key={key}", headers=MCP_HEADERS, json=INIT).status_code == 200
     assert client.post(f"/mcp?project={pid}&key=wrong", headers=MCP_HEADERS, json=INIT).status_code == 401
     assert client.get(f"/api/projects/{pid}/setup-extra").status_code == 401  # only the exact open paths
+    # changing a password signs that account out
+    monkeypatch.setenv("DASHBOARD_USERS", "vishal:new,admin:adm:admin")
+    assert client.get("/api/projects", headers=me).status_code == 401
+    # an older single DASHBOARD_PASSWORD becomes one read-only admin
+    monkeypatch.delenv("DASHBOARD_USERS")
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "s3cret")
+    adm = _sign_in(client, "admin", "s3cret")
+    assert client.get("/api/projects", headers=adm).status_code == 200
     monkeypatch.delenv("DASHBOARD_PASSWORD")
     assert client.get("/api/projects").status_code == 200
 
@@ -874,3 +890,38 @@ def test_session_start_hooks_report_figma_before_the_first_message(client, monke
     assert report(key, {"connected": True}, "nobody").status_code == 400
     monkeypatch.setenv("DASHBOARD_PASSWORD", "pw")  # the hook has no password, only the project key
     assert report(key, {"connected": False, "detail": "Needs authentication"}, "copilot").status_code == 200
+
+
+def test_developers_see_only_their_projects_and_the_admin_reads_everything(client, monkeypatch):
+    from app import auth
+    old = client.post("/api/projects", json={"name": "Before sign-in"}).json()["id"]
+    monkeypatch.setenv("DASHBOARD_USERS", "vishal:v1,rakesh:r1,admin:a1:admin")
+    auth.claim_unowned()  # on startup: projects from before sign-in go to the first developer (vishal)
+    vishal, rakesh, admin = _sign_in(client, "vishal", "v1"), _sign_in(client, "rakesh", "r1"), _sign_in(client, "admin", "a1")
+    mine = client.post("/api/projects", json={"name": "Rakesh app", "repo_url": "https://github.com/x/shared"}, headers=rakesh).json()
+    assert mine["owner"] == "rakesh"
+    # the same repository may be a project of each developer
+    assert client.post("/api/projects", json={"name": "Vishal app", "repo_url": "https://github.com/x/shared"}, headers=vishal).status_code == 201
+    names = lambda h: {p["name"] for p in client.get("/api/projects", headers=h).json()}
+    assert "Before sign-in" in names(vishal) and "Rakesh app" not in names(vishal)
+    assert names(rakesh) == {"Rakesh app"}
+    assert {"Before sign-in", "Rakesh app", "Vishal app"} <= names(admin)
+    # a run on Rakesh's project (started by his AI through the project key)
+    rid = tools.do_start_run(mine["id"], "implement R-1", "claude", title="R-1")["run_id"]
+    did = tools.do_save_document(mine["id"], rid, "plan.md", "# Plan") and client.get(f"/api/runs/{rid}", headers=rakesh).json()["documents"][0]["id"]
+    for path in (f"/api/projects/{mine['id']}", f"/api/runs/{rid}", f"/api/documents/{did}", f"/api/projects/{mine['id']}/logs",
+                 f"/api/oauth/jira/authorize?project={mine['id']}"):
+        assert client.get(path, headers=vishal, follow_redirects=False).status_code == 404, path
+    assert client.post(f"/api/runs/{rid}/stop", headers=vishal).status_code == 404
+    assert client.delete(f"/api/projects/{mine['id']}", headers=vishal).status_code == 404
+    assert rid not in [r["id"] for r in client.get("/api/runs", headers=vishal).json()]
+    assert [r["id"] for r in client.get("/api/runs", headers=rakesh).json()] == [rid]
+    # the admin reads every project, run, document and cost, and changes nothing
+    run = client.get(f"/api/runs/{rid}", headers=admin).json()
+    assert run["project_owner"] == "rakesh" and "usage" in run and "summary_md" in run
+    assert client.get(f"/api/documents/{did}", headers=admin).json()["content"] == "# Plan"
+    assert rid in [r["id"] for r in client.get("/api/runs", headers=admin).json()]
+    assert client.post(f"/api/runs/{rid}/stop", headers=admin).status_code == 403
+    assert client.post("/api/projects", json={"name": "x"}, headers=admin).status_code == 403
+    assert client.post(f"/api/runs/{rid}/stop", headers=rakesh).status_code == 200
+    assert client.post("/api/auth/logout", headers=rakesh).status_code == 200

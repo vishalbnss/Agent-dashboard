@@ -3,7 +3,6 @@ import type { Project, Run } from "../api";
 
 const STATUSES = [
   { key: "running", label: "In progress", color: "var(--running)" },
-  { key: "awaiting_approval", label: "Awaiting approval", color: "#d4a556" },
   { key: "done", label: "Completed", color: "var(--done)" },
   { key: "failed", label: "Failed", color: "var(--bad)" },
   { key: "stopped", label: "Stopped", color: "var(--muted)" },

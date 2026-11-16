@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy import inspect as sa_inspect, text as sa_text
 from sqlmodel import Session, select
 
-from app import connect, db, copilot
+from app import auth, connect, db, copilot
 from app.logs import LEVELS, record
 from app.crypto import encrypt
 from app.integrations import mcp_oauth
@@ -46,27 +46,67 @@ def _current_stage(s: Session, run_id: int) -> dict | None:
 def _run_row(s: Session, r: db.Run) -> dict:
     project = s.get(db.Project, r.project_id)
     return {**r.model_dump(), "usage": json.loads(r.usage_json or "{}"), "current_stage": _current_stage(s, r.id),
-            "project_name": project.name if project else ""}
+            "project_name": project.name if project else "", "project_owner": project.owner if project else ""}
+
+
+# ---- sign-in ----
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+@router.get("/auth/me")
+def me(request: Request):
+    """Whether sign-in is on, and who is signed in (null when nobody is)."""
+    if not auth.enabled():
+        return {"auth": False, "user": None}
+    return {"auth": True, "user": auth.session_user(auth.cookie_from(request.scope))}
+
+
+@router.post("/auth/login")
+async def login(body: LoginIn, request: Request):
+    import asyncio
+    from fastapi.responses import JSONResponse
+    user = auth.check_password(body.username, body.password) if auth.enabled() else None
+    if not user:
+        await asyncio.sleep(0.5)  # slows down password guessing
+        raise HTTPException(401, "Wrong user name or password")
+    res = JSONResponse({"auth": True, "user": user})
+    res.set_cookie(auth.COOKIE, auth.session_cookie(user["name"]), max_age=auth.MAX_AGE, httponly=True,
+                   samesite="lax", secure=request.url.scheme == "https" or _base_url(request).startswith("https://"))
+    return res
+
+
+@router.post("/auth/logout")
+def logout():
+    from fastapi.responses import JSONResponse
+    res = JSONResponse({"ok": True})
+    res.delete_cookie(auth.COOKIE)
+    return res
 
 
 @router.get("/projects")
-def list_projects(s: Session = Depends(db.get_session)):
+def list_projects(request: Request, s: Session = Depends(db.get_session)):
     out = []
-    for p in s.exec(select(db.Project).order_by(db.Project.created_at.desc())).all():
+    q = select(db.Project).order_by(db.Project.created_at.desc())
+    if (owner := auth.owner_filter(request)) is not None:
+        q = q.where(db.Project.owner == owner)
+    for p in s.exec(q).all():
         latest = s.exec(select(db.Run).where(db.Run.project_id == p.id).order_by(db.Run.started_at.desc())).first()
         out.append({**p.model_dump(exclude={"key"}), "latest_run": _run_row(s, latest) if latest else None})
     return out
 
 
 @router.post("/projects", status_code=201)
-def create_project(body: ProjectIn, s: Session = Depends(db.get_session)):
+def create_project(body: ProjectIn, request: Request, s: Session = Depends(db.get_session)):
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "Give the project a name")
     repo_url = db.normalize_repo_url(body.repo_url)
-    if repo_url and db.find_project(s, repo_url):
-        raise HTTPException(409, "A project with this repository URL already exists")
-    p = db.Project(name=name, repo_url=repo_url, caps_json=json.dumps({**db.DEFAULT_CAPS, **(body.caps or {})}))
+    owner = auth.current_name(request)
+    if repo_url and s.exec(select(db.Project).where(db.Project.repo_url == repo_url, db.Project.owner == owner)).first():
+        raise HTTPException(409, "You already have a project with this repository URL")
+    p = db.Project(name=name, repo_url=repo_url, owner=owner, caps_json=json.dumps({**db.DEFAULT_CAPS, **(body.caps or {})}))
     s.add(p)
     s.commit()
     s.refresh(p)
@@ -383,10 +423,12 @@ def list_logs(pid: int, run_id: int | None = None, level: str = "info", q: str =
 
 # ---- runs ----
 @router.get("/runs")
-def list_runs(project_id: int | None = None, s: Session = Depends(db.get_session)):
+def list_runs(request: Request, project_id: int | None = None, s: Session = Depends(db.get_session)):
     q = select(db.Run).order_by(db.Run.started_at.desc())
     if project_id:
         q = q.where(db.Run.project_id == project_id)
+    if (owner := auth.owner_filter(request)) is not None:
+        q = q.where(db.Run.project_id.in_(select(db.Project.id).where(db.Project.owner == owner)))
     return [_run_row(s, r) for r in s.exec(q).all()]
 
 

@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
 import { api, type DocumentRow, type Project, type ProjectDetail, type Run, type RunAgent, type LogEntry } from "./api";
 
 vi.mock("./api", () => ({ api: {
+  me: vi.fn(), login: vi.fn(), logout: vi.fn(),
   projects: vi.fn(), runs: vi.fn(), project: vi.fn(), documents: vi.fn(), document: vi.fn(), stopRun: vi.fn(), run: vi.fn(),
   createProject: vi.fn(), deleteProject: vi.fn(), rotateKey: vi.fn(),
   authorizeUrl: vi.fn((kind: string, id: number) => `/api/oauth/${kind}/authorize?project=${id}`),
@@ -64,6 +65,7 @@ beforeEach(() => {
   });
   vi.mocked(api.deleteTicket).mockImplementation(async (_pid, key) => { tickets = tickets.filter((t) => t.key !== key); });
   vi.mocked(api.documents).mockResolvedValue([]);
+  vi.mocked(api.me).mockResolvedValue({ auth: false, user: null });  // sign-in off, as when run locally
   vi.mocked(api.run).mockImplementation(async (id) => ({ ...runs.find((r) => r.id === id)! }));
   vi.mocked(api.createProject).mockImplementation(async (name, repo_url) => { const p = { ...makeProject(3, name), repo_url: repo_url || "" }; projects.push(p); return p; });
   vi.mocked(api.rotateKey).mockResolvedValue(connect);
@@ -610,6 +612,46 @@ describe("workspace redesign", () => {
     await user.type(within(dialog).getByLabelText("Ticket details"), "Do it");
     await user.click(within(dialog).getByRole("button", { name: "Save ticket" }));
     await waitFor(() => expect(api.createTicket).toHaveBeenCalledWith(1, "DEMO_1", "Demo", "Do it"));
+  });
+
+  it("asks for a sign-in when the dashboard has users, then shows who is signed in", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.me).mockResolvedValue({ auth: true, user: null });
+    vi.mocked(api.login).mockRejectedValueOnce(new Error("401 wrong")).mockResolvedValueOnce({ auth: true, user: { name: "rakesh", role: "developer" } });
+    vi.mocked(api.logout).mockResolvedValue({ ok: true });
+    openRoute("");
+    const form = await screen.findByRole("form", { name: "Sign in" });
+    await user.type(within(form).getByLabelText("User name"), "rakesh");
+    await user.type(within(form).getByLabelText("Password"), "nope");
+    await user.click(within(form).getByRole("button", { name: "Sign in" }));
+    expect(await screen.findByText("Wrong user name or password.")).toBeTruthy();
+    await user.click(within(form).getByRole("button", { name: "Sign in" }));
+    await screen.findByRole("heading", { name: "Workspace overview" });
+    expect(api.login).toHaveBeenLastCalledWith("rakesh", "nope");
+    expect(screen.getByText("Developer")).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Add project" }).length).toBeGreaterThan(0);
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await screen.findByRole("form", { name: "Sign in" });
+  });
+
+  it("gives the admin a read-only view of every project with its owner", async () => {
+    vi.mocked(api.me).mockResolvedValue({ auth: true, user: { name: "admin", role: "admin" } });
+    projects[0].owner = "rakesh"; projects[1].owner = "vishal";
+    runs.forEach((r) => { r.project_owner = "rakesh"; });
+    openRoute("projects");
+    expect(await screen.findByText("Owner: rakesh")).toBeTruthy();
+    expect(screen.getByText("Owner: vishal")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add project" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Delete / })).toBeNull();
+    expect(screen.getAllByText("Admin · read-only").length).toBeGreaterThan(0);
+    cleanup(); openRoute("runs");
+    expect((await screen.findAllByRole("columnheader", { name: "Owner" })).length).toBe(1);
+    cleanup(); openRoute("runs/1");
+    await screen.findByRole("heading", { name: "AT-1: Add navigation" });
+    expect(screen.queryByRole("button", { name: "Stop run" })).toBeNull();
+    cleanup(); openRoute("projects/1/tickets");
+    await screen.findByRole("region", { name: "Project tickets" });
+    expect(screen.queryByRole("button", { name: "Add ticket" })).toBeNull();
   });
 
   it("provides mobile navigation with Escape and focus restoration", async () => {

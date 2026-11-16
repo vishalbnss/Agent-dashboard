@@ -144,7 +144,7 @@ Configuration (`backend/.env`, all optional):
 | `APP_SECRET` | Encrypts stored tokens; any stable string (generated into `.env` on first local run) |
 | `DATABASE_URL` | SQLite by default (`backend/data/app.db`); a Postgres URL (`postgres://...` works) for a shared server |
 | `PUBLIC_BASE_URL` | Public address of the backend, used in connect commands and as the OAuth callback for Figma and Jira; on Render, `RENDER_EXTERNAL_URL` is used when this is unset |
-| `DASHBOARD_PASSWORD` | When set, the dashboard UI and REST API ask for this password (browser sign-in, any user name). MCP, setup downloads and OAuth callbacks stay key-protected instead |
+| `DASHBOARD_USERS` | Sign-in accounts, e.g. `vishal:pass1,rakesh:pass2,admin:pass3:admin` (`name:password`, add `:admin` for the admin). Developers see and change only the projects they create; the admin sees every project, run, cost, summary and document, read-only. Projects created before sign-in was turned on go to the first developer listed. Changing a password signs that user out. MCP, setup downloads, hooks and OAuth callbacks stay key-protected instead. Unset: no sign-in (local use). The older `DASHBOARD_PASSWORD` still works as a single read-only `admin` |
 
 ## Host it
 
@@ -160,14 +160,14 @@ cd backend
 
 Put it behind HTTPS (nginx, Caddy or a cloud load balancer): the project key travels in the URL.
 `PUBLIC_BASE_URL` is what the setup command, config files and the Jira/Figma OAuth callbacks contain.
-Set `DASHBOARD_PASSWORD` on any server reachable from the internet: without it anyone with the URL can open
+Set `DASHBOARD_USERS` on any server reachable from the internet: without it anyone with the URL can open
 projects and copy their connection keys.
 
 ### Render
 
 The repo carries a `Dockerfile` (builds the UI, runs the backend on `$PORT`) and a `render.yaml` Blueprint.
 Push the repo to GitHub, then in Render choose **New → Blueprint**, pick the repo, and enter a
-`DASHBOARD_PASSWORD` when asked. It creates the web service and a free Postgres database and generates
+`DASHBOARD_USERS` when asked. It creates the web service and a free Postgres database and generates
 `APP_SECRET`. Open `https://<service>.onrender.com`, sign in, and use the setup command from a project.
 
 Free-plan limits: the service sleeps after about 15 minutes idle and takes up to a minute to wake, so the first

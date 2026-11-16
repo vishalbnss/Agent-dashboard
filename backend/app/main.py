@@ -1,8 +1,4 @@
 """FastAPI app: REST for the dashboard + authenticated MCP endpoint for Claude Code / Codex."""
-import base64
-import os
-import re
-import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 
 from app import db
+from app.auth import Gate, claim_unowned
 from app.api.routes import router
 from app.connect import ProjectAuth
 from app.mcp.tools import mcp
@@ -26,6 +23,7 @@ mcp_app = mcp.streamable_http_app(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    claim_unowned()
     async with mcp.session_manager.run():
         yield
 
@@ -49,34 +47,4 @@ async def _root(scope, receive, send):
 
 app.mount("/", _root)
 
-# Open without the dashboard password: MCP and the setup/config downloads check the project key themselves,
-# the OAuth callback checks its one-time state, and the host's health check needs no credentials.
-_OPEN = re.compile(r"^/(mcp(/.*)?|api/health|api/oauth/[^/]+/callback|api/projects/\d+/(setup|setup-file|mcp-config|copilot-agent|figma-check|documents/upload))$")
-
-
-class PasswordGate:
-    """When DASHBOARD_PASSWORD is set, the dashboard UI and REST API ask for it (browser sign-in prompt; any user name).
-    ponytail: one shared password; per-user accounts when teams need separate access."""
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        password = os.getenv("DASHBOARD_PASSWORD", "")
-        if not password or scope["type"] != "http" or _OPEN.match(scope.get("path", "")):
-            return await self.app(scope, receive, send)
-        auth = dict(scope.get("headers", [])).get(b"authorization", b"").decode(errors="replace")
-        given = ""
-        if auth.lower().startswith("basic "):
-            try:
-                given = base64.b64decode(auth[6:]).decode().partition(":")[2]
-            except ValueError:
-                pass
-        if secrets.compare_digest(given.encode(), password.encode()):
-            return await self.app(scope, receive, send)
-        await send({"type": "http.response.start", "status": 401, "headers": [
-            (b"www-authenticate", b'Basic realm="Agents Dashboard", charset="UTF-8"'), (b"content-type", b"text/plain")]})
-        await send({"type": "http.response.body", "body": b"Sign in to the Agents Dashboard."})
-
-
-app.add_middleware(PasswordGate)
+app.add_middleware(Gate)  # sign-in and per-user project access, see app/auth.py
