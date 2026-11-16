@@ -110,7 +110,7 @@ class Run(SQLModel, table=True):
     title: str = ""           # short line for lists, written by the AI (falls back to the first sentence of goal)
     number: int = 0           # 1, 2, 3 ... within the project (ids are global)
     client: str = "unknown"
-    status: str = "running"  # running | awaiting_approval | done | failed | stopped
+    status: str = "running"  # running | done | failed | stopped (awaiting_approval: older runs only)
     routing: str = "standard"  # standard | low-cost, fixed when the run starts
     branch: str = ""
     pr_url: str = ""
@@ -120,21 +120,15 @@ class Run(SQLModel, table=True):
     finished_at: datetime | None = None
 
 
-class Approval(SQLModel, table=True):
-    """One version of a run's design document, waiting for or carrying a human decision made on the dashboard."""
+class Document(SQLModel, table=True):
+    """A text artifact of a run (design document, stage outputs under .agent-runs/<ID>/), shown in the Documents tab.
+    One row per (run, path); uploading the same path again replaces its content."""
     id: int | None = Field(default=None, primary_key=True)
+    project_id: int = Field(foreign_key="project.id", index=True)
     run_id: int = Field(foreign_key="run.id", index=True)
-    version: int = 1
-    content_md: str = ""
-    status: str = "pending"        # pending | approved | changes_requested
-    decided_by: str = ""
-    comment: str = ""
-    section_comments_json: str = "{}"   # {"Risks": "add mobile", ...}: notes the reviewer left on document sections
-    created_at: datetime = Field(default_factory=now)
-    decided_at: datetime | None = None
-
-    def view(self) -> dict:
-        return {**self.model_dump(exclude={"section_comments_json"}), "section_comments": json.loads(self.section_comments_json or "{}")}
+    path: str                      # relative to the run folder, e.g. 00-design/design-document.md
+    content: str = ""
+    updated_at: datetime = Field(default_factory=now)
 
 
 class RunPhase(SQLModel, table=True):
@@ -157,7 +151,7 @@ class LogEntry(SQLModel, table=True):
     ts: datetime = Field(default_factory=now, index=True)
     level: str = "info"       # debug | info | warn | error
     source: str = "mcp"       # mcp (the AI called a tool) | dashboard (someone used the UI) | system
-    event: str = ""           # tool name, or e.g. approval.decided
+    event: str = ""           # tool name, or e.g. run.stopped
     client: str = ""          # claude | codex | copilot
     message: str = ""
     detail_json: str = "{}"   # trimmed arguments and result

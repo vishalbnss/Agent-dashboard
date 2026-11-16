@@ -14,7 +14,7 @@ function TicketEditor({ projectId, ticket, tickets, onClose, onSaved }: {
   const save = async (event: FormEvent) => {
     event.preventDefault();
     const normalizedKey = key.trim().toUpperCase();
-    if (!/^[A-Z][A-Z0-9]+-\d+$/.test(normalizedKey)) { setError("Use a ticket ID such as FIN-2."); return; }
+    if (!/^[A-Z0-9][A-Z0-9._-]{0,63}$/.test(normalizedKey)) { setError("Use letters, digits, - _ or . in the ticket ID, e.g. FIN-2 or DEMO_1."); return; }
     if (!title.trim() || !body.trim()) { setError("Enter a title and ticket details."); return; }
     if (!ticket && tickets.some((existing) => existing.key === normalizedKey)) {
       setError("A ticket with this ID already exists. Edit that ticket instead."); return;

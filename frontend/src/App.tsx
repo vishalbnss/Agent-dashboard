@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, type Approval, type ApprovalRow, type Phase, type Project, type ProjectDetail, type Run, type RunAgent } from "./api";
+import { api, type DocumentRow, type Phase, type Project, type ProjectDetail, type Run, type RunAgent } from "./api";
 import { AppShell } from "./components/AppShell";
 import { ProjectSummary, RunSummary } from "./components/ActivitySummary";
 import { Dialog, EmptyState, ErrorNotice, Icon, LoadingState, MetricCard, PageHeader } from "./components/ui";
@@ -34,14 +34,13 @@ export default function App() {
   const { data, error, reload } = usePolling(loadWorkspace);
   const projects = data?.projects ?? [], runs = data?.runs ?? [];
   const detail = !!id && (seg === "projects" || seg === "runs");
-  return <AppShell active={sub === "review" ? "approvals" : seg} projects={projects} runs={runs}>
+  return <AppShell active={seg === "documents" ? "projects" : seg} projects={projects} runs={runs}>
     {error && <ErrorNotice message={error} onRetry={reload} />}
-    {!data && !detail && seg !== "connect" ? (!error && <LoadingState />)
+    {!data && !detail && seg !== "connect" && seg !== "documents" ? (!error && <LoadingState />)
       : seg === "projects" && id ? <ProjectPage key={id} id={+id} tab={sub} />
-      : seg === "runs" && id && sub === "review" ? <ReviewPage key={id} id={+id} />
+      : seg === "documents" && id ? <DocumentPage key={id} id={+id} />
       : seg === "runs" && id ? <RunPage key={id} id={+id} />
       : seg === "runs" ? <RunsPage key={query} runs={runs} initialStatus={new URLSearchParams(query).get("status") ?? ""} />
-      : seg === "approvals" ? <ApprovalInbox runs={runs} />
       : seg === "connect" ? <ConnectPage />
       : seg === "projects" ? <ProjectsPage projects={projects} reload={reload} />
       : <HomePage projects={projects} runs={runs} />}
@@ -56,7 +55,7 @@ type AgentStatus = "waiting" | "running" | "done" | "failed" | "interrupted";
 const isCompletedPreview = (run?: Run | null) => run?.status === "done" && run.usage._display_mode === "completed_preview";
 const isManuallyCompleted = (run?: Run | null) => run?.status === "done" && !isCompletedPreview(run) && /^\*\*Closure:\*\* Manually marked completed at the user's request\b/m.test(run.summary_md);
 // The nine stage agents of the Jira-to-PR workflow, in order. `face` picks the line-art character.
-// Design approval is a human gate before them; the run page shows it as the approval card.
+// Design approval is a human gate before them, given by the developer in the AI chat.
 const AGENTS = [
   { key: "branch-preflight", face: "orchestrator", name: "Branch preflight", job: "Checks access and creates the delivery branch", phases: ["branch-preflight"] },
   { key: "jira-intake", face: "planner", name: "Ticket intake", job: "Reads the tickets into testable contracts", phases: ["jira-intake"] },
@@ -280,24 +279,18 @@ function AddProjectForm({ className = "", onCreated }: { className?: string; onC
 }
 
 function HomePage({ projects, runs }: { projects: Project[]; runs: Run[] }) {
-  const waiting = runs.filter((r) => r.status === "awaiting_approval");
   return <>
     <PageHeader title="Workspace overview" actions={<AddProjectForm />} />
     <ProjectSummary projects={projects}>
       <MetricCard label="Projects" value={projects.length} icon="projects" href="#/projects" />
       <MetricCard label="Active runs" value={runs.filter((r) => r.status === "running").length} icon="runs" href="#/runs?status=running" />
-      <MetricCard label="Awaiting approval" value={waiting.length} icon="approval" tone={waiting.length ? "warn" : ""} href="#/approvals" />
+      <MetricCard label="Stopped or failed" value={runs.filter((r) => r.status === "stopped" || r.status === "failed").length} icon="close" href="#/runs?status=stopped" />
       <MetricCard label="Completed runs" value={runs.filter((r) => r.status === "done").length} icon="check" tone="ok" href="#/runs?status=done" />
     </ProjectSummary>
-    <div className="overview-grid">
-      <section className="panel recent-panel"><div className="section-heading"><h2>Recent runs</h2><a className="text-link" href="#/runs">View all <Icon name="arrow" /></a></div>
+    <section className="panel recent-panel"><div className="section-heading"><h2>Recent runs</h2><a className="text-link" href="#/runs">View all <Icon name="arrow" /></a></div>
         {runs.length ? <div className="recent-runs">{runs.slice(0, 6).map((r) => <a key={r.id} href={`#/runs/${r.id}`} className="recent-run"><span className={`run-marker ${r.status}`}><Icon name={r.status === "done" ? "check" : r.status === "awaiting_approval" ? "approval" : "runs"} /></span><span className="recent-run-main"><strong>{runTitle(r)}</strong><small>{r.project_name || "Project"} · Run #{r.number || r.id} · {ago(r.started_at)}</small></span><RunStatus run={r} /><Icon name="chevron" /></a>)}</div>
           : <EmptyState title="No runs yet" description={projects.length ? "Start a run from your connected coding agent." : "Add a project to start a run."} icon="runs" />}
-      </section>
-      <section className="panel"><div className="section-heading"><h2>Pending approvals</h2><span className="count-pill">{waiting.length}</span></div>
-        {waiting.length ? <div className="review-queue">{waiting.slice(0, 3).map((r) => <a href={`#/runs/${r.id}/review`} key={r.id} aria-label={`Review ${runTitle(r)}`}><span className="tag warn">Design approval</span><strong>{runTitle(r)}</strong><span>{r.project_name} <Icon name="arrow" /></span></a>)}{waiting.length > 3 && <a className="text-link" href="#/approvals">View all {waiting.length} approvals <Icon name="arrow" /></a>}</div> : <EmptyState title="No pending approvals" icon="approval" />}
-      </section>
-    </div>
+    </section>
   </>;
 }
 
@@ -316,43 +309,42 @@ function ProjectsPage({ projects, reload }: { projects: Project[]; reload: () =>
     {error && <ErrorNotice message={error} onRetry={() => setError("")} />}
     <div className="filter-bar"><label className="search-field"><Icon name="search" /><input aria-label="Search projects" placeholder="Search projects…" value={query} onChange={(e) => setQuery(e.target.value)} /></label><select aria-label="Connection status" value={filter} onChange={(e) => setFilter(e.target.value)}><option value="">All connections</option><option value="connected">Connected</option><option value="disconnected">Not connected</option></select><span className="results-count">{visible.length} project{visible.length === 1 ? "" : "s"}</span></div>
     {!projects.length ? <EmptyState title="No projects yet" description="Add a project to connect your coding agent." /> : !visible.length ? <EmptyState title="No matching projects" description="Try another name or connection filter." icon="search" action={<button className="secondary" onClick={() => { setQuery(""); setFilter(""); }}>Clear filters</button>} /> :
-      <ul className="project-cards">{visible.map((p) => <li key={p.id} className="project-card"><div className="project-card-top"><span className="project-symbol"><Icon name="projects" /></span><span className={`tag ${isConnected(p) ? "ok" : ""}`}>{isConnected(p) ? "AI connected" : "Setup needed"}</span><button className="icon-button delete-project" aria-label={`Delete ${p.name}`} onClick={() => remove(p)}><Icon name="close" /></button></div><a className="project-card-title" href={`#/projects/${p.id}`}>{p.name}</a><p className="repo-label" title={p.repo_url || p.local_path}>{p.repo_url ? p.repo_url.replace(/^https?:\/\//, "") : p.local_path || "Repository details appear when your AI connects"}</p><div className="project-clients">{p.claude_connected_at && <span><ConnIcon kind="claude" />Claude Code</span>}{p.codex_connected_at && <span><ConnIcon kind="codex" />Codex</span>}{p.copilot_connected_at && <span><ConnIcon kind="copilot" />GitHub Copilot</span>}{!isConnected(p) && <span><Icon name="connect" />Ready to connect</span>}</div><div className="project-latest"><span className="eyebrow">LATEST ACTIVITY</span>{p.latest_run ? <><a href={`#/runs/${p.latest_run.id}`}>{runTitle(p.latest_run)}</a><RunStatus run={p.latest_run} /></> : <p>{p.agents_md ? "Project guide ready. Start your first run." : "Connect an AI to set up your project guide."}</p>}</div><div className="project-card-footer"><a href={`#/projects/${p.id}`}>Open project <Icon name="arrow" /></a>{p.latest_run?.status === "awaiting_approval" && <a className="text-link" href={`#/runs/${p.latest_run.id}/review`}>Review design</a>}</div></li>)}</ul>}
+      <ul className="project-cards">{visible.map((p) => <li key={p.id} className="project-card"><div className="project-card-top"><span className="project-symbol"><Icon name="projects" /></span><span className={`tag ${isConnected(p) ? "ok" : ""}`}>{isConnected(p) ? "AI connected" : "Setup needed"}</span><button className="icon-button delete-project" aria-label={`Delete ${p.name}`} onClick={() => remove(p)}><Icon name="close" /></button></div><a className="project-card-title" href={`#/projects/${p.id}`}>{p.name}</a><p className="repo-label" title={p.repo_url || p.local_path}>{p.repo_url ? p.repo_url.replace(/^https?:\/\//, "") : p.local_path || "Repository details appear when your AI connects"}</p><div className="project-clients">{p.claude_connected_at && <span><ConnIcon kind="claude" />Claude Code</span>}{p.codex_connected_at && <span><ConnIcon kind="codex" />Codex</span>}{p.copilot_connected_at && <span><ConnIcon kind="copilot" />GitHub Copilot</span>}{!isConnected(p) && <span><Icon name="connect" />Ready to connect</span>}</div><div className="project-latest"><span className="eyebrow">LATEST ACTIVITY</span>{p.latest_run ? <><a href={`#/runs/${p.latest_run.id}`}>{runTitle(p.latest_run)}</a><RunStatus run={p.latest_run} /></> : <p>{p.agents_md ? "Project guide ready. Start your first run." : "Connect an AI to set up your project guide."}</p>}</div><div className="project-card-footer"><a href={`#/projects/${p.id}`}>Open project <Icon name="arrow" /></a></div></li>)}</ul>}
   </>;
 }
 
-type ProjectTab = "connections" | "tickets" | "approvals" | "runs" | "logs";
-const PROJECT_TABS: ProjectTab[] = ["connections", "tickets", "approvals", "runs", "logs"];
+type ProjectTab = "connections" | "tickets" | "documents" | "runs" | "logs";
+const PROJECT_TABS: ProjectTab[] = ["connections", "tickets", "documents", "runs", "logs"];
 
 function ProjectPage({ id, tab: routeTab }: { id: number; tab?: string }) {
-  const fetcher = useCallback(() => Promise.all([api.project(id), api.runs(id), api.approvals(id)]), [id]);
+  const fetcher = useCallback(() => Promise.all([api.project(id), api.runs(id), api.documents(id)]), [id]);
   const { data, error, reload } = usePolling(fetcher, 4000);
-  return <>{error && <ErrorNotice message={error} onRetry={reload} />}{data ? <ProjectContent p={data[0]} runs={data[1]} approvals={data[2]} routeTab={routeTab} load={reload} /> : !error && <LoadingState />}</>;
+  return <>{error && <ErrorNotice message={error} onRetry={reload} />}{data ? <ProjectContent p={data[0]} runs={data[1]} documents={data[2]} routeTab={routeTab} load={reload} /> : !error && <LoadingState />}</>;
 }
 
-function ProjectContent({ p, runs, approvals, routeTab, load }: { p: ProjectDetail; runs: Run[]; approvals: ApprovalRow[]; routeTab?: string; load: () => void }) {
+function ProjectContent({ p, runs, documents, routeTab, load }: { p: ProjectDetail; runs: Run[]; documents: DocumentRow[]; routeTab?: string; load: () => void }) {
   const id = p.id;
   // Pick the default once, so background refreshes never switch the selected tab.
-  const [firstTab] = useState<ProjectTab>(() => !(p.claude_connected_at || p.codex_connected_at || p.copilot_connected_at) ? "connections" : approvals.some((a) => a.status === "pending") ? "approvals" : "runs");
+  const [firstTab] = useState<ProjectTab>(() => !(p.claude_connected_at || p.codex_connected_at || p.copilot_connected_at) ? "connections" : "runs");
   const [deleteError, setDeleteError] = useState("");
   const aiOn = p.claude_connected_at || p.codex_connected_at || p.copilot_connected_at;
   const tab = PROJECT_TABS.includes(routeTab as ProjectTab) ? (routeTab as ProjectTab) : firstTab ?? "runs";
-  const waiting = approvals.filter((a) => a.status === "pending").length;
   return (
     <>
       <PageHeader title={p.name} breadcrumbs={[{ label: "Projects", href: "#/projects" }]} actions={<span className={`tag ${aiOn ? "ok" : "warn"}`}>{aiOn ? "AI connected" : "Setup needed"}</span>} />
       {deleteError && <ErrorNotice message={deleteError} onRetry={() => setDeleteError("")} />}
-      <div className="project-context"><span><Icon name="branch" />{p.repo_url || p.local_path || "Repository details will appear after connecting"}</span><span>{runs.length} runs</span><span>{waiting} pending approvals</span>
+      <div className="project-context"><span><Icon name="branch" />{p.repo_url || p.local_path || "Repository details will appear after connecting"}</span><span>{runs.length} runs</span><span>{documents.length} documents</span>
         <RoutingSwitch p={p} onChanged={load} /></div>
       <div className="ptabs" role="tablist">
         <a role="tab" aria-selected={tab === "connections"} href={`#/projects/${id}/connections`}>Connections</a>
         <a role="tab" aria-selected={tab === "tickets"} href={`#/projects/${id}/tickets`}>Tickets <span className="count">{p.tickets.length}</span></a>
-        <a role="tab" aria-selected={tab === "approvals"} href={`#/projects/${id}/approvals`}>Approvals{waiting > 0 && <span className="badge">{waiting}</span>}</a>
+        <a role="tab" aria-selected={tab === "documents"} href={`#/projects/${id}/documents`}>Documents <span className="count">{documents.length}</span></a>
         <a role="tab" aria-selected={tab === "runs"} href={`#/projects/${id}/runs`}>Runs <span className="count">{runs.length}</span></a>
         <a role="tab" aria-selected={tab === "logs"} href={`#/projects/${id}/logs`}>Logs</a>
       </div>
       {tab === "connections" && <><div className="section-heading"><h2>Connected tools</h2><a className="text-link" href="#/connect">Setup guide <Icon name="arrow" /></a></div><AgentSetup p={p} onChanged={load} /><ConnectionBoxes p={p} onChanged={load} /></>}
       {tab === "tickets" && <TicketsTab projectId={id} tickets={p.tickets} onChanged={load} />}
-      {tab === "approvals" && <ApprovalsTab rows={approvals} />}
+      {tab === "documents" && <DocumentsTab documents={documents} />}
       {tab === "runs" && <RunsTable runs={runs} />}
       {tab === "logs" && <LogsTab projectId={id} runs={runs} />}
       <div className="project-danger"><button className="link" onClick={() => { if (confirm("Delete this project and its runs? Your code folder is not touched.")) api.deleteProject(id).then(() => (location.hash = "#/projects")).catch(() => setDeleteError("Could not delete this project. Please try again.")); }}>Delete project</button></div>
@@ -490,17 +482,9 @@ function RunsPage({ runs, initialStatus }: { runs: Run[]; initialStatus: string 
   const [client, setClient] = useState("");
   const visible = runs.filter((r) => (!status || r.status === status) && (!client || r.client === client) && `${r.title} ${r.goal} ${r.project_name ?? ""} ${r.number}`.toLowerCase().includes(query.toLowerCase()));
   return <><PageHeader title="Runs" />
-    <RunSummary runs={runs}><MetricCard label="Total runs" value={runs.length} icon="runs" /><MetricCard label="In progress" value={runs.filter((r) => r.status === "running").length} icon="clock" /><MetricCard label="Completed" value={runs.filter((r) => r.status === "done").length} icon="check" tone="ok" /><MetricCard label="Awaiting approval" value={runs.filter((r) => r.status === "awaiting_approval").length} icon="approval" tone="warn" /></RunSummary>
+    <RunSummary runs={runs}><MetricCard label="Total runs" value={runs.length} icon="runs" /><MetricCard label="In progress" value={runs.filter((r) => r.status === "running").length} icon="clock" /><MetricCard label="Completed" value={runs.filter((r) => r.status === "done").length} icon="check" tone="ok" /><MetricCard label="Stopped" value={runs.filter((r) => r.status === "stopped").length} icon="close" /></RunSummary>
     <div className="filter-bar"><label className="search-field"><Icon name="search" /><input aria-label="Search runs" placeholder="Search runs or tickets…" value={query} onChange={(e) => setQuery(e.target.value)} /></label><select aria-label="Run status" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">All statuses</option>{Object.entries(STATUS_LABEL).map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select><select aria-label="AI client" value={client} onChange={(e) => setClient(e.target.value)}><option value="">All AI clients</option><option value="claude">Claude Code</option><option value="codex">Codex</option><option value="copilot">GitHub Copilot</option></select>{(query || status || client) && <button className="link" onClick={() => { setQuery(""); setStatus(""); setClient(""); }}>Clear filters</button>}<span className="results-count">{visible.length} of {runs.length} runs</span></div>
     {runs.length && !visible.length ? <EmptyState title="No matching runs" description="Try a different search or clear the filters." icon="search" /> : <RunsTable runs={visible} showProject />}
-  </>;
-}
-
-function ApprovalInbox({ runs }: { runs: Run[] }) {
-  const waiting = runs.filter((r) => r.status === "awaiting_approval");
-  return <><PageHeader title="Approvals" actions={<span className={`tag ${waiting.length ? "warn" : ""}`}>{waiting.length} pending</span>} />
-    {waiting.length ? <div className="inbox">{waiting.map((r) => <a key={r.id} className="inbox-card" href={`#/runs/${r.id}/review`}><span className="approval-icon"><Icon name="approval" /></span><span className="inbox-main"><span className="inbox-title">{runTitle(r)}</span><span className="muted">{r.project_name} · Run #{r.number || r.id}</span></span><span className="inbox-cta">Review document <Icon name="arrow" /></span></a>)}</div> : <EmptyState title="No pending approvals" icon="approval" />}
-    {runs.length > 0 && <div className="approval-help"><Icon name="document" /><p>Previous decisions are in each project's <strong>Approvals</strong> tab.</p><a className="text-link" href="#/projects">Open projects <Icon name="arrow" /></a></div>}
   </>;
 }
 
@@ -521,7 +505,7 @@ function RunsTable({ runs, showProject = false }: { runs: Run[]; showProject?: b
           <td><a href={`#/runs/${r.id}`}>#{r.number || r.id}</a></td>
           {showProject && <td><a href={`#/projects/${r.project_id}`}>{r.project_name || r.project_id}</a></td>}
           <td><a className="run-title" href={`#/runs/${r.id}`} title={r.goal}>{runTitle(r)}</a><span className="muted" style={{ fontSize: 12 }}> · {AI_LABEL[r.client] ?? r.client}</span></td>
-          <td><RunStatus run={r} />{r.status === "awaiting_approval" && <> <a className="approve-link" href={`#/runs/${r.id}/review`}>Review and approve</a></>}</td>
+          <td><RunStatus run={r} /></td>
           <td>{utc(r.started_at).toLocaleString()}</td><td>{duration(r)}</td>
           <td><Cost usage={r.usage} /></td>
           <td>{r.pr_url ? <a href={r.pr_url} target="_blank">open</a> : "–"}</td>
@@ -563,8 +547,8 @@ function RunPage({ id }: { id: number }) {
   const preview = isCompletedPreview(r);
   const manual = isManuallyCompleted(r);
   const summary = preview ? String(r.usage._preview_summary_md || "") : r.summary_md;
-  const title = manual ? "Manually completed" : r.status === "running" ? "Agents are working…" : r.status === "awaiting_approval" ? "Waiting for your approval" : r.status === "done" ? "Run completed" : "Run stopped";
-  const approvals = r.approvals ?? [];
+  const title = manual ? "Manually completed" : r.status === "running" ? "Agents are working…" : r.status === "awaiting_approval" ? "Waiting for approval" : r.status === "done" ? "Run completed" : "Run stopped";
+  const live = r.status === "running" || r.status === "awaiting_approval";
   const ran = new Set(phases.map((phase) => phase.name).filter((n) => AGENTS.some((a) => a.key === n))).size;
   const costs = (r.agents ?? []).map((a) => a.est_cost_usd).filter((v): v is number => v != null);
   const costSum = costs.reduce((x, y) => x + y, 0);
@@ -592,8 +576,8 @@ function RunPage({ id }: { id: number }) {
         {r.routing === "low-cost" && <span><strong>Models</strong> <span className="tag warn">Low-cost test mode</span></span>}
         {r.branch && <span><strong>Branch</strong> {r.branch}</span>}
         {r.pr_url && <span><a href={r.pr_url} target="_blank">Open pull request</a></span>}
+        {live && <StopRun run={r} onStopped={reload} />}
       </div>
-      {approvals.length > 0 && <ApprovalCard run={r} approvals={approvals} />}
       <div className="grid run-detail-grid">
         <Roster run={r} title={title} subtitle={sub} />
         <section>
@@ -603,13 +587,15 @@ function RunPage({ id }: { id: number }) {
             <p className="closure-note">Closed manually. Stage results reflect the work recorded before closure.</p>
             <details className="execution-report"><summary>Execution report</summary><Markdown text={summary} runSummary /></details>
           </> : <Markdown text={summary} runSummary />}</div> : <EmptyState title="No summary yet" icon="document" />}
+          <h2>Documents</h2>
+          {r.documents?.length ? <DocList documents={r.documents} /> : <EmptyState title="No documents yet" description="The design document and each stage's artifacts appear here as the agents save them." icon="document" />}
         </section>
       </div>
     </>
   );
 }
 
-/* ---------- design document approval ---------- */
+/* ---------- Markdown ---------- */
 
 /* Small Markdown renderer: headings, lists, tables, code, bold/italic/inline code. No HTML passthrough. */
 function Inline({ text }: { text: string }) {
@@ -690,358 +676,60 @@ function Markdown({ text, changed, runSummary = false }: { text: string; changed
   return <div className="md-body">{out}</div>;
 }
 
-const MAX_ROUNDS = 3;
-const APPROVAL_LABEL: Record<string, string> = { pending: "Waiting for your decision", approved: "Approved", changes_requested: "Changes requested" };
-const APPROVAL_STATUS: Record<string, string> = { pending: "awaiting_approval", approved: "done", changes_requested: "failed" };
-const APPROVAL_MARK: Record<string, string> = { pending: "●", approved: "✓", changes_requested: "↩" };
-
 function ago(s: string) {
   const m = Math.round((Date.now() - utc(s).getTime()) / 60000);
   return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : utc(s).toLocaleDateString();
 }
 
-/* Run page: a compact pointer to the review page. */
-function ApprovalCard({ run, approvals }: { run: Run; approvals: Approval[] }) {
-  const a = approvals[approvals.length - 1];
-  const pending = a.status === "pending";
-  return (
-    <a className={`approval-card ${a.status}`} href={`#/runs/${run.id}/review`}>
-      <span className={`status ${APPROVAL_STATUS[a.status]}`}>{APPROVAL_LABEL[a.status]}</span>
-      <span className="approval-card-text"><strong>Design document v{a.version}</strong>
-        <span className="muted"> · {pending ? `submitted ${ago(a.created_at)}` : `${a.decided_by}, ${utc(a.decided_at!).toLocaleString()}`}</span></span>
-      <span className="approval-card-cta">{pending ? "Review and decide →" : "Open →"}</span>
-    </a>
-  );
-}
-
-/* Project page, Approvals tab: waiting documents as cards, decided ones as a history table. */
-function ApprovalsTab({ rows }: { rows: ApprovalRow[] }) {
-  if (!rows.length) return <EmptyState title="No design documents yet" icon="document" />;
-  const byRun = new Map<number, ApprovalRow[]>();
-  for (const a of [...rows].reverse()) byRun.set(a.run_id, [...(byRun.get(a.run_id) ?? []), a]);  // oldest version first
-  const all = [...byRun.values()].sort((x, y) => y[y.length - 1].id - x[x.length - 1].id);
-  const last = (v: ApprovalRow[]) => v[v.length - 1];
-  const waiting = all.filter((v) => last(v).status === "pending");
-  const past = all.filter((v) => last(v).status !== "pending");
-  const title = (a: ApprovalRow) => a.run_title || a.run_goal.split(/(?<=[.!?])\s|\n/)[0].slice(0, 90);
-  return (
-    <>
-      <h2>Waiting for you</h2>
-      {waiting.length ? (
-        <div className="inbox">
-          {waiting.map((v) => {
-            const a = last(v), prev = v[v.length - 2];
-            return (
-              <a key={a.id} className="inbox-card" href={`#/runs/${a.run_id}/review`}>
-                <span className="dot running" />
-                <span className="inbox-main">
-                  <span className="inbox-title">Run #{a.run_number} · {title(a)}</span>
-                  <span className="muted">Version {a.version} of {MAX_ROUNDS} · submitted {ago(a.created_at)}</span>
-                  {prev?.status === "changes_requested" && <span className="inbox-prev">↩ {prev.decided_by} asked: {plainLine(prev.comment.split("\n")[0]).slice(0, 140)}</span>}
-                </span>
-                <span className="inbox-cta">Review →</span>
-              </a>
-            );
-          })}
-        </div>
-      ) : <div className="empty">Nothing is waiting for a decision.</div>}
-      {past.length > 0 && (
-        <>
-          <h2>Past</h2>
-          <div className="table-scroll" role="region" aria-label="Approval history" tabIndex={0}>
-          <table className="runs">
-            <thead><tr><th>Run</th><th>History</th><th>Decided</th><th></th></tr></thead>
-            <tbody>{past.map((v) => {
-              const a = last(v);
-              return (
-                <tr key={a.id}>
-                  <td><a className="run-title" href={`#/runs/${a.run_id}`}>#{a.run_number} {title(a)}</a></td>
-                  <td><span className="chips">{v.map((x) => <span key={x.id} className={`chip ${x.status}`} title={x.comment || undefined}>v{x.version} {APPROVAL_MARK[x.status]} {x.decided_by}</span>)}</span></td>
-                  <td className="muted">{a.decided_at ? utc(a.decided_at).toLocaleString() : "–"}</td>
-                  <td><a className="approve-link" style={{ color: "var(--accent)" }} href={`#/runs/${a.run_id}/review`}>View</a></td>
-                </tr>
-              );
-            })}</tbody>
-          </table>
-          </div>
-        </>
-      )}
-    </>
-  );
-}
-
-/* ---------- review page: one design document, its sections, changes and the decision ---------- */
-
-type DocSection = { title: string; head: number | null; start: number; end: number };
-
-/* Splits a design document at its main headings. A single "# Title" above "##" sections is the title, not a section.
-   Documents written with bold lines ("**Goal**") instead of headings are split at those. */
-function splitSections(lines: string[]): { title: string | null; titleLine: number | null; sections: DocSection[] } {
-  const heads: { i: number; level: number; text: string }[] = [];
-  const bolds: { i: number; text: string }[] = [];
-  let fence = false;
-  lines.forEach((l, i) => {
-    if (l.startsWith("```")) { fence = !fence; return; }
-    if (fence) return;
-    const h = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(l);
-    if (h) heads.push({ i, level: h[1].length, text: h[2].replace(/\*\*/g, "") });
-    const b = /^\*\*([^*]+?)\*\*:?\s*$/.exec(l.trim());
-    if (b) bolds.push({ i, text: b[1] });
-  });
-  let titleLine: number | null = null, title: string | null = null, cuts: { i: number; text: string }[] = [];
-  if (heads.length) {
-    const h1 = heads.filter((h) => h.level === 1);
-    const level = h1.length === 1 && heads.some((h) => h.level === 2) ? 2 : Math.min(...heads.map((h) => h.level));
-    if (level === 2 && h1.length === 1) { titleLine = h1[0].i; title = h1[0].text; }
-    cuts = heads.filter((h) => h.level === level);
-  } else cuts = bolds;
-  const sections: DocSection[] = [];
-  const first = cuts.length ? cuts[0].i : lines.length;
-  if (lines.slice(0, first).some((l, i) => i !== titleLine && l.trim())) sections.push({ title: "Overview", head: null, start: 0, end: first });
-  cuts.forEach((c, k) => sections.push({ title: c.text, head: c.i, start: c.i + 1, end: k + 1 < cuts.length ? cuts[k + 1].i : lines.length }));
-  return { title, titleLine, sections };
-}
-
-/* Line diff (longest common subsequence). Returns the new lines that were added and the old lines that were removed,
-   each removal anchored at the new-line index where it happened. Documents are a few hundred lines, so O(n·m) is fine. */
-function lineDiff(a: string[], b: string[]) {
-  const n = a.length, m = b.length;
-  const L = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
-  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = a[i].trimEnd() === b[j].trimEnd() ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
-  const added = new Set<number>(), removed: { at: number; text: string }[] = [];
-  let i = 0, j = 0;
-  while (i < n && j < m) {
-    if (a[i].trimEnd() === b[j].trimEnd()) { i++; j++; }
-    else if (L[i + 1][j] >= L[i][j + 1]) removed.push({ at: j, text: a[i++] });
-    else added.add(j++);
-  }
-  while (i < n) removed.push({ at: m, text: a[i++] });
-  while (j < m) added.add(j++);
-  return { added, removed: removed.filter((r) => r.text.trim()) };
-}
-
-/* One Markdown line as plain text: no bullet or heading marker, table cells joined with "·". */
-const plainLine = (l: string) => {
-  const t = l.trim();
-  if (/^\|.*\|$/.test(t)) return t.slice(1, -1).split("|").map((c) => c.trim()).join(" · ");
-  return t.replace(/^([-*•]|\d+[.)]|#+)\s+/, "");
-};
-
-const readNotes =(key: string): Record<string, string> => { try { return JSON.parse(localStorage.getItem(key) ?? "{}"); } catch { return {}; } };
-const writeNotes = (key: string, notes: Record<string, string>) => {
-  try { if (Object.keys(notes).length) localStorage.setItem(key, JSON.stringify(notes)); else localStorage.removeItem(key); } catch { /* private window */ }
-};
-
-function ReviewPage({ id }: { id: number }) {
-  const fetcher = useCallback(() => api.run(id), [id]);
-  const { data: r, error, reload } = usePolling(fetcher, 4000);
-  if (!r) return error ? <ErrorNotice message={error} onRetry={reload} /> : <LoadingState />;
-  const approvals = r.approvals ?? [];
-  if (!approvals.length) return (
-    <>
-      <h1>Design document<small>Run #{r.number || r.id} · <a href={`#/runs/${r.id}`}>{runTitle(r)}</a></small></h1>
-      <div className="empty">No design document submitted yet.</div>
-    </>
-  );
-  return <>{error && <ErrorNotice message={error} onRetry={reload} />}<Review key={`${r.id}:${r.started_at}:${approvals[approvals.length - 1].version}`} run={r} approvals={approvals} onDecided={reload} /></>;
-}
-
-function Review({ run, approvals, onDecided }: { run: Run; approvals: Approval[]; onDecided: () => void }) {
-  const latest = approvals[approvals.length - 1];
-  const [shown, setShown] = useState(latest.version);
-  const [showChanges, setShowChanges] = useState(true);
-  const [editing, setEditing] = useState<string | null>(null);
-  // Include creation time so a reset database cannot reuse a previous run's drafts.
-  const draftKey = (v: number) => `review-notes:${run.id}:${run.started_at}:v${v}`;
-  const [draft, setDraft] = useState(() => ({ key: draftKey(latest.version), notes: readNotes(draftKey(latest.version)) }));
-  useEffect(() => writeNotes(draft.key, draft.notes), [draft]);
-  const setNote = (title: string, text: string) => setDraft((d) => {
-    const notes = { ...d.notes };
-    if (text.trim()) notes[title] = text.trim(); else delete notes[title];
-    return { ...d, notes };
-  });
-
-  const doc = approvals.find((a) => a.version === shown) ?? latest;
-  const prev = approvals.find((a) => a.version === doc.version - 1);
-  const editable = latest.status === "pending" && doc.version === latest.version;
-  const notes = editable ? draft.notes : doc.section_comments ?? {};
-  const lines = doc.content_md.replace(/\r/g, "").split("\n");
-  const { title, titleLine, sections } = splitSections(lines);
-  const diff = prev && showChanges ? lineDiff(prev.content_md.replace(/\r/g, "").split("\n"), lines) : null;
-  const inSection = (s: DocSection, at: number) => at >= (s.head ?? s.start) && (at < s.end || (s === sections[sections.length - 1] && at >= s.end));
-  const removedIn = (s: DocSection) => diff?.removed.filter((r) => inSection(s, r.at)) ?? [];
-  const addedIn = (s: DocSection) => !!diff && [...diff.added].some((at) => at >= (s.head ?? s.start) && at < s.end);
-  const jump = (t: string) => document.getElementById(`sec-${sections.findIndex((s) => s.title === t)}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
-
-  return (
-    <>
-      <PageHeader title="Design review" breadcrumbs={[{ label: "Approvals", href: "#/approvals" }, { label: run.project_name || "Project", href: `#/projects/${run.project_id}/approvals` }]} description={`Run #${run.number || run.id} · ${runTitle(run)}`} actions={<a className="button-secondary" href={`#/runs/${run.id}`}>View run <Icon name="arrow" /></a>} />
-      <div className="review-bar">
-        {approvals.length > 1 && (
-          <span className="tabs">{approvals.map((a) => (
-            <button key={a.version} className={shown === a.version ? "" : "secondary"} onClick={() => { setShown(a.version); setEditing(null); }}>v{a.version} {APPROVAL_MARK[a.status]}</button>
-          ))}</span>
-        )}
-        <span className={`status ${APPROVAL_STATUS[doc.status]}`}>v{doc.version}: {APPROVAL_LABEL[doc.status]}</span>
-        {prev && <label className="switch"><input type="checkbox" checked={showChanges} onChange={(e) => setShowChanges(e.target.checked)} /> Show what changed since v{prev.version}</label>}
-      </div>
-      {prev?.status === "changes_requested" && (
-        <div className="comment-box"><strong>{prev.decided_by} asked for these changes in v{prev.version}:</strong><div className="pre-line">{prev.comment}</div></div>
-      )}
-      <div className="review">
-        <div className="review-nav" role="navigation" aria-label="Sections">
-          <span className="review-nav-label">Sections</span>
-          {sections.map((s) => (
-            <button key={s.title} className="review-nav-item" onClick={() => jump(s.title)}>
-              <span>{s.title}</span>
-              {(addedIn(s) || removedIn(s).length > 0) && <span className="chg-dot" title="Changed since the previous version" />}
-              {notes[s.title] && <span className="note-dot" title="Has a note">✎</span>}
-            </button>
-          ))}
-        </div>
-        <article className="review-doc">
-          {title && <p className={`doc-title ${diff?.added.has(titleLine!) ? "chg" : ""}`}>{title}</p>}
-          {sections.map((s, n) => {
-            const body = lines.slice(s.start, s.end).map((l, k) => (s.start + k === titleLine ? "" : l)).join("\n");
-            const removed = removedIn(s);
-            return (
-              <section key={n} id={`sec-${n}`} className="doc-sec">
-                <div className="sec-head">
-                  <h2 className={s.head !== null && diff?.added.has(s.head) ? "chg" : undefined}>{s.title}</h2>
-                  {editable && editing !== s.title && <button className="link" onClick={() => setEditing(s.title)}>{notes[s.title] ? "Edit note" : "+ Note"}</button>}
-                </div>
-                {editing === s.title
-                  ? <NoteEditor initial={notes[s.title] ?? ""} onSave={(t) => { setNote(s.title, t); setEditing(null); }} onCancel={() => setEditing(null)} />
-                  : notes[s.title] && <div className="note"><span className="note-label">{editable ? "Your note" : `${doc.decided_by}'s note`}</span>{notes[s.title]}</div>}
-                <Markdown text={body} changed={diff ? (a, b) => { for (let x = s.start + a; x < s.start + b; x++) if (diff.added.has(x)) return true; return false; } : undefined} />
-                {removed.length > 0 && (
-                  <div className="removed"><span className="removed-label">Removed since v{prev!.version}</span>{removed.map((r, k) => <del key={k}>{plainLine(r.text)}</del>)}</div>
-                )}
-              </section>
-            );
-          })}
-        </article>
-        <aside className="review-side">
-          <TicketBox run={run} />
-          <DecisionBox run={run} latest={latest} viewing={doc.version} notes={editable ? draft.notes : {}} onJump={jump}
-            onShowLatest={() => setShown(latest.version)} onClearNotes={() => setDraft((d) => ({ ...d, notes: {} }))} onDecided={onDecided} />
-        </aside>
-      </div>
-    </>
-  );
-}
-
-function NoteEditor({ initial, onSave, onCancel }: { initial: string; onSave: (text: string) => void; onCancel: () => void }) {
-  const [text, setText] = useState(initial);
-  return (
-    <div className="note-editor">
-      <textarea rows={3} autoFocus placeholder="What should change in this section? Goes to the agent word for word." value={text} onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) onSave(text); if (e.key === "Escape") onCancel(); }} />
-      <div className="row" style={{ margin: 0 }}>
-        <button onClick={() => onSave(text)}>Save note</button>
-        {initial && <button className="secondary" onClick={() => onSave("")}>Remove</button>}
-        <button className="link" onClick={onCancel}>Cancel</button>
-      </div>
-    </div>
-  );
-}
-
-function TicketBox({ run }: { run: Run }) {
-  const tickets = run.tickets ?? [];
-  return (
-    <div className="side-box">
-      <h3>Ticket</h3>
-      {tickets.length ? tickets.map((t) => (
-        <div key={t.key} className="ticket">
-          <div><span className="ticket-key">{t.key}</span> {t.title || <span className="muted">not read by the dashboard yet</span>}</div>
-          {t.figma_urls.map((u, i) => <a key={u} className="figma-link" href={u} target="_blank" rel="noreferrer"><ConnIcon kind="figma" /> Open Figma design{t.figma_urls.length > 1 ? ` ${i + 1}` : ""} ↗</a>)}
-          {t.title && !t.figma_urls.length && <span className="muted" style={{ fontSize: 12 }}>No Figma link in the ticket.</span>}
-        </div>
-      )) : <p className="muted" style={{ margin: 0, fontSize: 12 }}>No ticket key in the request.</p>}
-      <details className="request"><summary className="muted">Full request</summary><pre>{run.goal}</pre></details>
-    </div>
-  );
-}
-
-function DecisionBox({ run, latest, viewing, notes, onJump, onShowLatest, onClearNotes, onDecided }: {
-  run: Run; latest: Approval; viewing: number; notes: Record<string, string>;
-  onJump: (title: string) => void; onShowLatest: () => void; onClearNotes: () => void; onDecided: () => void;
-}) {
-  const [name, setName] = useState(() => { try { return localStorage.getItem("approver-name") ?? ""; } catch { return ""; } });
-  const [comment, setComment] = useState("");
-  const [mode, setMode] = useState<"idle" | "changes">("idle");
-  const [confirming, setConfirming] = useState(false);
-  const [busy, setBusy] = useState(false);
+/* The run's status is the dashboard's record; the agent itself is stopped in the developer's AI session. */
+function StopRun({ run, onStopped }: { run: Run; onStopped: () => void }) {
   const [err, setErr] = useState("");
-  const noteList = Object.entries(notes);
-
-  if (latest.status !== "pending") return (
-    <div className={`side-box decided ${latest.status}`}>
-      <h3>{latest.status === "approved" ? <><Check /> Approved</> : "↩ Sent back for changes"}</h3>
-      <p>{latest.status === "approved"
-        ? `${latest.decided_by} approved v${latest.version} on ${utc(latest.decided_at!).toLocaleString()}. The agents are working from this version.`
-        : latest.version < MAX_ROUNDS ? `${latest.decided_by} asked for changes. The agent is revising and will submit v${latest.version + 1}; it shows up here.`
-        : `${latest.decided_by} asked for changes in the last of ${MAX_ROUNDS} rounds, so the run stops here.`}</p>
-      <a className="approve-link" style={{ margin: 0, color: "var(--accent)" }} href={`#/runs/${run.id}`}>Go to the run →</a>
-    </div>
-  );
-  if (viewing !== latest.version) return (
-    <div className="side-box">
-      <h3>Your decision</h3>
-      <p>You are looking at v{viewing}. Decisions are made on the newest version.</p>
-      <button onClick={onShowLatest}>Go to v{latest.version}</button>
-    </div>
-  );
-
-  const send = async (decision: "approved" | "changes_requested") => {
-    setErr("");
-    if (!name.trim()) { setErr("Type your name first, so the decision is recorded."); setConfirming(false); return; }
-    if (decision === "changes_requested" && !comment.trim() && !noteList.length) { setErr("Write what should change, or add a note to a section."); return; }
-    setBusy(true);
-    try {
-      try { localStorage.setItem("approver-name", name.trim()); } catch { /* ignore */ }
-      await api.decide(run.id, latest.version, decision, name, comment, notes);
-      onClearNotes(); setComment(""); setMode("idle"); setConfirming(false); onDecided();
-    } catch (e) { setErr(String(e)); setConfirming(false); } finally { setBusy(false); }
+  const stop = async () => {
+    if (!confirm(`Mark run #${run.number || run.id} as stopped? This updates the dashboard only; stop the agent in your AI session too.`)) return;
+    try { await api.stopRun(run.id); onStopped(); } catch { setErr("Could not stop the run. Try again."); }
   };
+  return <span><button className="secondary" onClick={stop}>Stop run</button>{err && <span className="err"> {err}</span>}</span>;
+}
 
-  return (
-    <div className="side-box decide">
-      <h3>Your decision</h3>
-      <label className="field"><span>Your name</span><input placeholder="e.g. Priya (PO)" value={name} onChange={(e) => setName(e.target.value)} /></label>
-      {noteList.length > 0 && (
-        <div className="note-list">
-          <strong>{noteList.length} section note{noteList.length > 1 ? "s" : ""}</strong>
-          <ul>{noteList.map(([t, v]) => <li key={t}><button className="link" onClick={() => onJump(t)}>{t}</button> {v.length > 60 ? v.slice(0, 57) + "…" : v}</li>)}</ul>
-        </div>
-      )}
-      {mode === "idle" ? (
-        <>
-          <button className="approve" disabled={busy || noteList.length > 0} onClick={() => { setErr(""); if (!name.trim()) setErr("Type your name first, so the decision is recorded."); else setConfirming(true); }}><Check /> Approve and start</button>
-          {noteList.length > 0 && <p className="hint">You left notes. Send them back, or <button className="link" onClick={onClearNotes}>clear them</button> to approve.</p>}
-          <button className="secondary" disabled={busy} onClick={() => setMode("changes")}>Request changes…</button>
-        </>
-      ) : (
-        <>
-          <label className="field"><span>{noteList.length ? "Anything else? (optional)" : "What should change?"}</span>
-            <textarea rows={4} autoFocus placeholder="Goes to the agent word for word. Use + Note on a section for section-specific changes." value={comment} onChange={(e) => setComment(e.target.value)} /></label>
-          <button disabled={busy} onClick={() => send("changes_requested")}>Send back for changes</button>
-          <button className="link" disabled={busy} onClick={() => setMode("idle")}>Cancel</button>
-        </>
-      )}
-      {err && <p className="err" style={{ margin: 0 }}>{err}</p>}
-      <p className="muted" style={{ margin: 0, fontSize: 12 }}>Round {latest.version} of {MAX_ROUNDS}</p>
-      {confirming && (
-        <Dialog title={`Approve design document v${latest.version}?`} onClose={() => setConfirming(false)}>
-          <p style={{ marginTop: 0 }}>The agents start working from this version right away: they create the branch and implement it. Recorded as approved by <strong>{name.trim()}</strong>.</p>
-          <div className="row" style={{ justifyContent: "flex-end", margin: 0 }}>
-            <button className="secondary" onClick={() => setConfirming(false)}>Cancel</button>
-            <button className="approve-btn" disabled={busy} autoFocus onClick={() => send("approved")}><Check /> Approve and start</button>
-          </div>
-        </Dialog>
-      )}
-    </div>
-  );
+/* ---------- documents: the design document and every stage artifact the agents uploaded ---------- */
+
+const kb = (chars: number) => chars < 1024 ? `${chars} chars` : `${(chars / 1024).toFixed(1)} KB`;
+
+function DocList({ documents }: { documents: DocumentRow[] }) {
+  return <ul className="doc-list">{documents.map((d) => <li key={d.id}>
+    <a href={`#/documents/${d.id}`}><Icon name="document" /><span className="doc-path">{d.path}</span></a>
+    <span className="muted">{kb(d.chars)} · {ago(d.updated_at)}</span>
+  </li>)}</ul>;
+}
+
+function DocumentsTab({ documents }: { documents: DocumentRow[] }) {
+  if (!documents.length) return <EmptyState title="No documents yet" description="When a run starts, its design document and each stage's artifacts appear here." icon="document" />;
+  const runs = new Map<number, DocumentRow[]>();
+  for (const d of documents) runs.set(d.run_id, [...(runs.get(d.run_id) ?? []), d]);
+  return <>{[...runs.entries()].map(([rid, docs]) => <section key={rid} className="panel doc-group">
+    <div className="section-heading"><h2><a href={`#/runs/${rid}`}>Run #{docs[0].run_number ?? rid}</a>{docs[0].run_title ? ` · ${docs[0].run_title}` : ""}</h2><span className="count-pill">{docs.length}</span></div>
+    <DocList documents={docs} />
+  </section>)}</>;
+}
+
+function DocumentPage({ id }: { id: number }) {
+  const fetcher = useCallback(async () => {
+    const d = await api.document(id);
+    return { d, run: await api.run(d.run_id) };
+  }, [id]);
+  const { data, error, reload } = usePolling(fetcher, 15000);
+  if (!data) return error ? <ErrorNotice message={error} onRetry={reload} /> : <LoadingState />;
+  const { d, run } = data;
+  const isMd = /\.(md|markdown)$/i.test(d.path);
+  const isJson = /\.json$/i.test(d.path);
+  const pretty = isJson ? (() => { try { return JSON.stringify(JSON.parse(d.content), null, 2); } catch { return d.content; } })() : d.content;
+  return <>
+    <PageHeader title={d.path.split("/").pop() || d.path}
+      breadcrumbs={[{ label: run.project_name || "Project", href: `#/projects/${run.project_id}/documents` }, { label: `Run #${run.number || run.id}`, href: `#/runs/${run.id}` }]}
+      description={`${d.path} · updated ${ago(d.updated_at)}`} />
+    <div className="panel doc-view">{isMd ? <Markdown text={d.content} /> : <pre className="doc-raw">{pretty}</pre>}</div>
+    {(run.documents?.length ?? 0) > 1 && <><h2>Other documents of this run</h2><DocList documents={run.documents!.filter((x) => x.id !== d.id)} /></>}
+  </>;
 }
 
 function ConnectPage() {

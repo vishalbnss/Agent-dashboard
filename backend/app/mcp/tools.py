@@ -8,7 +8,6 @@ import asyncio
 import concurrent.futures
 import json
 import re
-import time
 from pathlib import Path
 
 from mcp.server.mcpserver import Context, MCPServer
@@ -32,8 +31,8 @@ mcp = MCPServer(
         "review a ticket, feature or design, call `start_run` FIRST with the request verbatim and follow the "
         "coordinator instructions it returns: a nine-stage Jira-to-PR workflow whose stage prompts come from "
         "`get_stage(name)`. Read tickets with `get_ticket` and Figma links with the `figma` MCP server (call "
-        "`get_figma_design` first for the file and node ids). Before any stage, submit the design document with "
-        "`submit_design_document` and wait for approval (`check_approval`). Report each stage with "
+        "`get_figma_design` first for the file and node ids). Before any stage, save the design document with "
+        "`save_document` and get the developer's approval in the chat. Report each stage with "
         "`log_phase`; end with `finish_run`."
     ),
 )
@@ -79,6 +78,14 @@ def short_title(goal: str, title: str = "") -> str:
     return (t[:87] + "…") if len(t) > 90 else t
 
 
+def ticket_keys(s: Session, project_id: int, goal: str) -> list[str]:
+    """Ticket IDs named in a request: Jira-style keys, plus any saved ticket ID of the project (e.g. "DEMO1", "fin_5")."""
+    saved = s.exec(select(db.Ticket.key).where(db.Ticket.project_id == project_id)).all()
+    found = TICKET_KEY_RE.findall(goal) + [k for k in saved
+                                            if re.search(rf"(?<![\w-]){re.escape(k)}(?![\w-])", goal, re.IGNORECASE)]
+    return list(dict.fromkeys(found))
+
+
 def do_start_run(project_id: int, goal: str, client: str = "unknown", repo_url: str = "", path: str = "", title: str = "") -> dict:
     with Session(db.engine) as s:
         project = s.get(db.Project, project_id)
@@ -116,7 +123,7 @@ def do_start_run(project_id: int, goal: str, client: str = "unknown", repo_url: 
             "run_id": run.id,
             "project": {"id": project.id, "name": project.name, "repo_url": project.repo_url,
                         "local_path": project.local_path, "has_agents_md": bool(project.agents_md)},
-            "ticket_keys": TICKET_KEY_RE.findall(goal),
+            "ticket_keys": ticket_keys(s, project.id, goal),
             "needs_onboarding": needs_onboarding,
             "routing": "low-cost" if low_cost else "standard",
             "stages": onboarding.stage_table(ai, low_cost),
@@ -157,6 +164,8 @@ JIRA_ISSUE = ["getJiraIssue", "get_issue", "jira_get_issue"]
 def do_get_ticket(project_id: int, key: str) -> dict:
     key = key.strip().upper()
     with Session(db.engine) as s:
+        if not key:
+            return {"error": "Give the ticket ID, e.g. FIN-2."}
         t = s.exec(select(db.Ticket).where(db.Ticket.project_id == project_id, db.Ticket.key == key)).first()
         if not t:
             token = mcp_oauth.token_for_project(s, project_id, "jira")
@@ -256,102 +265,38 @@ def do_report_connection(project_id: int, kind: str, connected: bool, detail: st
     return {"ok": True}
 
 
-MAX_APPROVAL_ROUNDS = 3
+MAX_DOC_CHARS = 512_000
 
 
-def _approvals(s: Session, run_id: int) -> list[db.Approval]:
-    return list(s.exec(select(db.Approval).where(db.Approval.run_id == run_id).order_by(db.Approval.version)).all())
+def clean_doc_path(path: str) -> str:
+    """A run-relative path such as 00-design/design-document.md: forward slashes, no leading slash, no "..", no drive."""
+    parts = [p for p in str(path).replace("\\", "/").split("/") if p not in ("", ".")]
+    if not parts or any(p == ".." or ":" in p for p in parts) or len("/".join(parts)) > 300:
+        raise ValueError(f"Invalid document path: {path!r}")
+    return "/".join(parts)
 
 
-def _approval_view(a: db.Approval) -> dict:
-    return {"version": a.version, "status": a.status, "decided_by": a.decided_by, "comment": a.comment,
-            "section_comments": json.loads(a.section_comments_json or "{}"), "submitted_at": a.created_at.isoformat(), "decided_at": a.decided_at.isoformat() if a.decided_at else None}
+def save_documents(s: Session, run: db.Run, files: list[tuple[str, str]]) -> int:
+    """Insert or replace (run, path) documents. The caller commits."""
+    for path, content in files:
+        path = clean_doc_path(path)
+        if len(content) > MAX_DOC_CHARS:
+            raise ValueError(f"{path} is larger than {MAX_DOC_CHARS:,} characters")
+        d = s.exec(select(db.Document).where(db.Document.run_id == run.id, db.Document.path == path)).first() \
+            or db.Document(project_id=run.project_id, run_id=run.id, path=path)
+        d.content, d.updated_at = content, db.now()
+        s.add(d)
+    return len(files)
 
 
-def do_submit_design_document(project_id: int, run_id: int, content_md: str) -> dict:
-    """The agent hands in the design document; the run waits until someone decides on the dashboard."""
+def do_save_document(project_id: int, run_id: int, path: str, content: str) -> dict:
     with Session(db.engine) as s:
         run = _run(s, run_id)
         if run.project_id != project_id:
             raise ValueError("This run belongs to another project.")
-        existing = _approvals(s, run_id)
-        if any(a.status == "pending" for a in existing):
-            return {"error": "A design document is already waiting for a decision. Call check_approval instead of submitting again."}
-        if len(existing) >= MAX_APPROVAL_ROUNDS:
-            return {"error": f"The design document was sent back {MAX_APPROVAL_ROUNDS} times. Stop the run and report the last comment to the user."}
-        a = db.Approval(run_id=run_id, version=len(existing) + 1, content_md=content_md)
-        run.status = "awaiting_approval"
-        s.add(a)
-        s.add(run)
-        s.add(db.RunPhase(run_id=run_id, name="design-approval", status="running",
-                          notes=f"Design document v{a.version} submitted, waiting for approval on the dashboard"))
+        save_documents(s, run, [(path, content)])
         s.commit()
-        return {"version": a.version, "status": "pending", "rounds_left": MAX_APPROVAL_ROUNDS - a.version,
-                "next": APPROVAL_WAIT_NEXT}
-
-
-APPROVAL_WAIT_SECONDS = 40  # under Codex's default 60 s MCP tool timeout
-APPROVAL_WAIT_NEXT = (f"Call check_approval(run_id) now and again each time it returns pending: it waits up to "
-                      f"{APPROVAL_WAIT_SECONDS} seconds for the decision itself, so do not sleep in the shell, do not end "
-                      "your turn and do not ask the user while it is pending. Continue as soon as it is approved or changes_requested.")
-
-
-def do_check_approval(project_id: int, run_id: int, wait: float = 0) -> dict:
-    """Latest decision. With wait > 0, blocks (call from a worker thread) until a decision or the wait runs out,
-    so the agent's next call happens right after the reviewer clicks, without the agent sleeping."""
-    deadline = time.monotonic() + wait
-    while True:
-        out = _check_approval_once(project_id, run_id)
-        if out["status"] != "pending" or time.monotonic() >= deadline:
-            return out
-        time.sleep(2)
-
-
-def _check_approval_once(project_id: int, run_id: int) -> dict:
-    with Session(db.engine) as s:
-        run = _run(s, run_id)
-        if run.project_id != project_id:
-            raise ValueError("This run belongs to another project.")
-        existing = _approvals(s, run_id)
-        if not existing:
-            return {"status": "none", "next": "Call submit_design_document first."}
-        a = existing[-1]
-        out = _approval_view(a)
-        out["rounds_left"] = MAX_APPROVAL_ROUNDS - a.version
-        if a.status == "approved":
-            out["next"] = "Approved. Start Stage 01 (branch preflight) and run the workflow."
-        elif a.status == "changes_requested":
-            out["next"] = ("Revise the design document according to the comment and call submit_design_document again."
-                           if a.version < MAX_APPROVAL_ROUNDS else
-                           "No rounds left. Stop the run (finish_run with status stopped) and report the comment to the user.")
-        else:
-            out["next"] = "Still waiting. " + APPROVAL_WAIT_NEXT
-        return out
-
-
-def decide_approval(s: Session, run_id: int, version: int, decision: str, name: str, comment: str,
-                    section_comments: dict[str, str] | None = None) -> db.Approval:
-    """Dashboard side: record the decision and let the run continue. Section notes are folded into the comment
-    the agent reads ("Risks: add mobile"), and also kept apart so the dashboard can show them per section."""
-    a = s.exec(select(db.Approval).where(db.Approval.run_id == run_id, db.Approval.version == version)).first()
-    if not a:
-        raise ValueError("Unknown design document version")
-    if a.status != "pending":
-        raise ValueError("This version was already decided")
-    notes = {k.strip()[:200]: v.strip()[:2000] for k, v in (section_comments or {}).items() if k.strip() and v.strip()}
-    full = "\n".join([comment.strip()] * bool(comment.strip()) + [f"- {k}: {v}" for k, v in notes.items()])
-    a.status, a.decided_by, a.comment, a.decided_at = decision, name.strip()[:120], full[:8000], db.now()
-    a.section_comments_json = json.dumps(notes)
-    run = _run(s, run_id)
-    run.status = "running"
-    s.add(a)
-    s.add(run)
-    s.add(db.RunPhase(run_id=run_id, name="design-approval", status="done" if decision == "approved" else "failed",
-                      notes=(f"v{version} approved by {a.decided_by}" if decision == "approved"
-                             else f"v{version}: changes requested by {a.decided_by}: {a.comment[:150]}")))
-    s.commit()
-    s.refresh(a)
-    return a
+        return {"ok": True, "path": clean_doc_path(path), "chars": len(content)}
 
 
 def do_open_pull_request(project_id: int, run_id: int, branch: str, title: str, body: str = "", base: str | None = None) -> dict:
@@ -499,21 +444,11 @@ def report_connection(kind: str, connected: bool, detail: str = "", client: str 
 
 @mcp.tool()
 @logged
-def submit_design_document(run_id: int, content_md: str, ctx: Context = None) -> dict:
-    """Hand in the design document (Markdown) for human approval on the dashboard before any implementation.
-    Then call check_approval until it is decided (it waits for the decision itself). Sections: goal, scope of changes (in/out), how the implementation
-    will be done (approach, components, files to touch, data/state, mapping to Figma nodes), test plan, risks and
-    assumptions, open questions, acceptance-criteria mapping."""
-    return do_submit_design_document(_project_id(ctx), run_id, content_md)
-
-
-@mcp.tool()
-@logged
-async def check_approval(run_id: int, ctx: Context = None) -> dict:
-    """Current decision on the latest design document: pending | approved | changes_requested, with the approver's
-    name and comment. Waits up to 40 seconds for a decision before returning pending; call it again right away
-    while pending (no shell sleep, do not end the turn)."""
-    return await asyncio.to_thread(do_check_approval, _project_id(ctx), run_id, APPROVAL_WAIT_SECONDS)
+def save_document(run_id: int, path: str, content: str, ctx: Context = None) -> dict:
+    """Save one text document of this run to the dashboard's Documents tab, e.g. the design document as
+    path="00-design/design-document.md". Saving the same path again replaces it. For whole run folders use
+    `node .agents-dashboard/upload-docs.mjs <run_id> .agent-runs/<ID>` instead (no tokens)."""
+    return do_save_document(_project_id(ctx), run_id, path, content)
 
 
 @mcp.tool()

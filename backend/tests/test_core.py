@@ -100,7 +100,7 @@ def test_copilot_workflow_isolation_approvals_and_usage(client):
     rid = run["run_id"]
     assert len(run["stages"]) == 9 and run["needs_onboarding"]
     assert all(stage["model"] == "selected Copilot model" for stage in run["stages"])
-    assert "submit_design_document" in run["plan"] and "check_approval" in run["plan"]
+    assert "save_document" in run["plan"] and "upload-docs.mjs" in run["plan"] and "check_approval" not in run["plan"]
     assert "The initial tester must not receive Figma" in run["plan"]
     assert "Haiku" not in run["plan"] and "Agent tool)" not in run["plan"]
     assert "Preserve existing agent instructions" in run["plan"]
@@ -120,11 +120,6 @@ def test_copilot_workflow_isolation_approvals_and_usage(client):
     tools.do_report_connection(pid, "figma", False, client="claude")
     config = client.get(f"/api/projects/{pid}").json()["integrations"][0]["config"]
     assert config["clients"]["copilot"]["connected"] and not config["clients"]["claude"]["connected"]
-    approval = tools.do_submit_design_document(pid, rid, "# Plan\nImplement CP-2")
-    assert client.get(f"/api/runs/{rid}").json()["status"] == "awaiting_approval"
-    assert tools.do_check_approval(pid, rid)["status"] == "pending"
-    client.post(f"/api/runs/{rid}/approvals/{approval['version']}/decide",
-                json={"decision": "approved", "name": "Tester", "comment": ""})
     tools.do_finish_run(pid, rid, {"what_changed": ["Change tested"], "usage": {"ai_credits": 1.25, "input_tokens": 1500},
         "stages": [{"phase": "implementation", "model": "sonnet", "tokens": 5000, "outcome": "Build passed"}]})
     result = client.get(f"/api/runs/{rid}").json()
@@ -357,7 +352,7 @@ def test_manual_ticket_lifecycle_without_jira(client, monkeypatch):
     assert tools.do_get_ticket(pid, "FIN-2")["title"] == "Empty results"
     assert client.post(f"/api/projects/{other}/tickets", json={**body, "title": "Other project"}).status_code == 201
 
-    assert client.post(url, json={**body, "key": "invalid"}).status_code == 400
+    assert client.post(url, json={**body, "key": "not valid"}).status_code == 400
     assert client.post(url, json={**body, "key": "FIN-3", "body_md": " \n "}).status_code == 400
     assert client.put(url + "/FIN-2", json={**body, "key": "FIN-3"}).status_code == 400
     assert client.post("/api/projects/999999/tickets", json=body).status_code == 404
@@ -446,92 +441,81 @@ def test_jira_text_helpers():
     assert jira.parse_issue("not json", "X-2")["body_md"] == "not json"
 
 
-def test_design_document_approval_gate(client):
+def test_design_document_is_approved_in_chat_and_kept_as_a_document(client):
     pid = client.post("/api/projects", json={"name": "gate"}).json()["id"]
     run = tools.do_start_run(pid, "implement GT-1", "claude")
-    rid = run["run_id"]
-    assert "Design approval gate (before any stage)" in run["plan"] and "submit_design_document(run_id, content)" in run["plan"]
-    assert run["plan"].index("Design approval gate") < run["plan"].index("## Nine-stage sequence")
-    assert tools.do_check_approval(pid, rid)["status"] == "none"
-    r = tools.do_submit_design_document(pid, rid, "# Design v1\nScope: card only")
-    assert r["version"] == 1 and r["status"] == "pending" and r["rounds_left"] == 2
-    assert "already waiting" in tools.do_submit_design_document(pid, rid, "again")["error"]
-    rec = client.get(f"/api/runs/{rid}").json()
-    assert rec["status"] == "awaiting_approval" and rec["approvals"][0]["content_md"].startswith("# Design v1")
-    assert rec["phases"][-1]["name"] == "design-approval" and rec["phases"][-1]["status"] == "running"
-    assert tools.do_check_approval(pid, rid)["status"] == "pending"
-    assert "do not end your turn" in tools.do_check_approval(pid, rid)["next"]
-    # a waiting check returns as soon as the reviewer decides, so the agent never has to sleep or be told "continue"
-    import threading, time as _t
-    wrid = tools.do_start_run(pid, "implement GT-9", "claude")["run_id"]
-    tools.do_submit_design_document(pid, wrid, "# Design")
-    threading.Timer(0.5, lambda: client.post(f"/api/runs/{wrid}/approvals/1/decide",
-                                             json={"decision": "changes_requested", "name": "Priya", "comment": "More"})).start()
-    t0 = _t.monotonic()
-    waited = tools.do_check_approval(pid, wrid, wait=20)
-    assert waited["status"] == "changes_requested" and waited["comment"] == "More" and _t.monotonic() - t0 < 5
-    # the PO sends it back
-    assert client.post(f"/api/runs/{rid}/approvals/1/decide", json={"decision": "changes_requested", "name": "Priya", "comment": ""}).status_code == 400
-    d = client.post(f"/api/runs/{rid}/approvals/1/decide", json={"decision": "changes_requested", "name": "Priya", "comment": "Add the empty state"}).json()
-    assert d["status"] == "changes_requested" and d["decided_by"] == "Priya"
-    c = tools.do_check_approval(pid, rid)
-    assert c["status"] == "changes_requested" and c["comment"] == "Add the empty state" and "Revise" in c["next"]
-    assert client.get(f"/api/runs/{rid}").json()["status"] == "running"
-    assert client.post(f"/api/runs/{rid}/approvals/1/decide", json={"decision": "approved", "name": "x"}).status_code == 409
-    # v2 approved
-    assert tools.do_submit_design_document(pid, rid, "# Design v2\nEmpty state added")["version"] == 2
-    client.post(f"/api/runs/{rid}/approvals/2/decide", json={"decision": "approved", "name": "Ravi (FDE)"})
-    c = tools.do_check_approval(pid, rid)
-    assert c["status"] == "approved" and c["decided_by"] == "Ravi (FDE)" and "Stage 01" in c["next"]
-    rec = client.get(f"/api/runs/{rid}").json()
-    assert rec["status"] == "running" and [a["status"] for a in rec["approvals"]] == ["changes_requested", "approved"]
-    assert "approved by Ravi (FDE)" in rec["phases"][-1]["notes"]
-    # the round limit is enforced
-    rid2 = tools.do_start_run(pid, "implement GT-2", "claude")["run_id"]
-    for v in (1, 2, 3):
-        tools.do_submit_design_document(pid, rid2, f"v{v}")
-        client.post(f"/api/runs/{rid2}/approvals/{v}/decide", json={"decision": "changes_requested", "name": "P", "comment": "no"})
-    assert "No rounds left" in tools.do_check_approval(pid, rid2)["next"]
-    assert "sent back 3 times" in tools.do_submit_design_document(pid, rid2, "v4")["error"]
+    rid, plan = run["run_id"], run["plan"]
+    assert "Design approval gate (before any stage)" in plan and "approves it here, in this chat" in plan
+    assert plan.index("Design approval gate") < plan.index("## Nine-stage sequence")
+    assert "submit_design_document" not in plan and "check_approval" not in plan
+    r = tools.do_save_document(pid, rid, "00-design/design-document.md", "# Design v1")
+    assert r == {"ok": True, "path": "00-design/design-document.md", "chars": 11}
+    tools.do_save_document(pid, rid, "00-design\\design-document.md", "# Design v2")  # same path: replaced
+    run_view = client.get(f"/api/runs/{rid}").json()
+    assert run_view["status"] == "running" and [d["path"] for d in run_view["documents"]] == ["00-design/design-document.md"]
+    doc = client.get(f"/api/documents/{run_view['documents'][0]['id']}").json()
+    assert doc["content"] == "# Design v2"
+    for bad in ("../secrets.txt", "a/../../b", "C:/x.md", ""):
+        with pytest.raises(ValueError):
+            tools.do_save_document(pid, rid, bad, "x")
+    other = client.post("/api/projects", json={"name": "other"}).json()["id"]
+    with pytest.raises(ValueError, match="another project"):
+        tools.do_save_document(other, rid, "a.md", "x")
 
 
-def test_section_notes_go_back_to_the_agent(client):
-    pid = client.post("/api/projects", json={"name": "notes"}).json()["id"]
-    rid = tools.do_start_run(pid, "implement NT-1", "claude")["run_id"]
-    tools.do_submit_design_document(pid, rid, "# Goal\nx\n## Risks\ny")
-    notes = {"Risks": "Add mobile", "Goal": "Mention the beta flag"}
-    # notes are only for sending back, not for approving
-    assert client.post(f"/api/runs/{rid}/approvals/1/decide", json={"decision": "approved", "name": "P", "section_comments": notes}).status_code == 400
-    d = client.post(f"/api/runs/{rid}/approvals/1/decide", json={"decision": "changes_requested", "name": "P", "section_comments": notes}).json()
-    assert d["section_comments"] == notes
-    c = tools.do_check_approval(pid, rid)
-    assert c["section_comments"] == notes and "Risks: Add mobile" in c["comment"] and "Goal: Mention the beta flag" in c["comment"]
-    # a general comment comes first, then the section notes
-    tools.do_submit_design_document(pid, rid, "# Goal\nx2")
-    client.post(f"/api/runs/{rid}/approvals/2/decide", json={"decision": "changes_requested", "name": "P", "comment": "Shorter", "section_comments": {"Goal": "ok"}})
-    assert tools.do_check_approval(pid, rid)["comment"].startswith("Shorter")
+def test_upload_script_sends_the_run_folder_to_the_documents_tab(client, monkeypatch):
+    pid = client.post("/api/projects", json={"name": "docs"}).json()["id"]
+    rid = tools.do_start_run(pid, "implement DOC-1", "claude", title="DOC-1")["run_id"]
+    key = _key(pid)
+    up = lambda body, k=key: client.post(f"/api/projects/{pid}/documents/upload?key={k}", json=body)
+    files = [{"path": "manifest.md", "content": "# Manifest"}, {"path": "06-test/report.md", "content": "all pass"}]
+    assert up({"run_id": rid, "files": files}, "wrong").status_code == 401
+    assert up({"run_id": 999999, "files": files}).status_code == 404
+    assert up({"run_id": rid, "files": [{"path": "../x", "content": "x"}]}).status_code == 400
+    monkeypatch.setenv("DASHBOARD_PASSWORD", "pw")  # the script has only the project key
+    assert up({"run_id": rid, "files": files}).json() == {"ok": True, "saved": 2}
+    monkeypatch.delenv("DASHBOARD_PASSWORD")
+    up({"run_id": rid, "files": [{"path": "manifest.md", "content": "# Manifest v2"}]})
+    rows = client.get(f"/api/projects/{pid}/documents").json()
+    assert [(d["path"], d["run_number"], d["run_title"]) for d in rows] == [("06-test/report.md", 1, "DOC-1"), ("manifest.md", 1, "DOC-1")]
+    assert "content" not in rows[0]
+    assert client.get(f"/api/documents/{rows[1]['id']}").json()["content"] == "# Manifest v2"
+    # the setup command installs the script; it holds no key
+    script = client.post(f"/api/projects/{pid}/setup-file?key={key}&client=upload-docs", content="").text
+    assert "documents/upload" in script and key not in script
+    assert ".agents-dashboard/upload-docs.mjs" in client.get(f"/api/projects/{pid}/setup?key={key}&shell=ps").text
+    assert client.delete(f"/api/projects/{pid}").status_code == 204
+    with Session(db.engine) as s:
+        assert s.exec(select(db.Document).where(db.Document.project_id == pid)).all() == []
 
 
-def test_project_approvals_list_and_run_tickets(client):
+def test_a_stuck_run_can_be_stopped_from_the_dashboard(client):
+    pid = client.post("/api/projects", json={"name": "stuck"}).json()["id"]
+    rid = tools.do_start_run(pid, "implement ST-1", "claude")["run_id"]
+    with Session(db.engine) as s:  # a run left waiting by an older version or a closed AI session
+        r = s.get(db.Run, rid); r.status = "awaiting_approval"; s.add(r); s.commit()
+    stopped = client.post(f"/api/runs/{rid}/stop").json()
+    assert stopped["status"] == "stopped" and stopped["finished_at"]
+    assert client.post(f"/api/runs/{rid}/stop").status_code == 409
+    assert client.get(f"/api/projects/{pid}/logs").json()["items"][0]["event"] == "run.stopped"
+
+
+def test_run_tickets_include_jira_style_and_saved_free_form_ids(client):
     pid = client.post("/api/projects", json={"name": "inbox"}).json()["id"]
     client.put(f"/api/projects/{pid}/tickets/IB-1", json={"key": "IB-1", "title": "Login page",
                "body_md": "Design: https://www.figma.com/design/K9/F?node-id=3-4"})
+    for key in ("demo1", "DEMO_2", "ui.3"):  # any letters, digits, - _ . work as a ticket ID
+        assert client.put(f"/api/projects/{pid}/tickets/{key}", json={"key": key, "title": key, "body_md": "x"}).status_code == 200
+    for bad in ("has space", "-x", "a/b"):
+        assert client.post(f"/api/projects/{pid}/tickets", json={"key": bad, "title": "", "body_md": "x"}).status_code == 400
     r1 = tools.do_start_run(pid, "implement IB-1 and IB-7", "claude", title="Login page")["run_id"]
     r2 = tools.do_start_run(pid, "fix the header", "claude")["run_id"]
-    tools.do_submit_design_document(pid, r1, "v1")
-    client.post(f"/api/runs/{r1}/approvals/1/decide", json={"decision": "changes_requested", "name": "P", "comment": "more"})
-    tools.do_submit_design_document(pid, r1, "v2")
-    tools.do_submit_design_document(pid, r2, "v1")
-    client.post(f"/api/runs/{r2}/approvals/1/decide", json={"decision": "approved", "name": "Ravi"})
-    rows = client.get(f"/api/projects/{pid}/approvals").json()
-    assert [(a["run_id"], a["version"], a["status"]) for a in rows] == [(r2, 1, "approved"), (r1, 2, "pending"), (r1, 1, "changes_requested")]
-    first = rows[1]
-    assert first["run_number"] == 1 and first["run_title"] == "Login page" and "content_md" not in first
-    # the review page shows the tickets named in the request, with their Figma links
     tickets = client.get(f"/api/runs/{r1}").json()["tickets"]
     assert tickets == [{"key": "IB-1", "title": "Login page", "figma_urls": ["https://www.figma.com/design/K9/F?node-id=3-4"]},
                        {"key": "IB-7", "title": "", "figma_urls": []}]
     assert client.get(f"/api/runs/{r2}").json()["tickets"] == []
+    run = tools.do_start_run(pid, "Implement demo1 and review it", "claude")
+    assert run["ticket_keys"] == ["DEMO1"] and tools.do_get_ticket(pid, "demo1")["title"] == "demo1"
 
 
 def test_lists_carry_live_status(client):
@@ -648,8 +632,6 @@ def test_workflow_phase_reports_keep_order_and_run_state(client):
     assert detail["current_stage"]["name"] == "independent-test"
     assert client.get(f"/api/runs?project_id={pid}").json()[0]["current_stage"]["name"] == "independent-test"
     assert detail["status"] == "running"
-    tools.do_submit_design_document(pid, rid, "Updated scope needs review")
-    assert client.get(f"/api/runs/{rid}").json()["status"] == "awaiting_approval"
 
 
 def test_one_setup_command_merges_every_ai_config(client):
@@ -720,7 +702,6 @@ def test_run_agents_report_model_time_and_cost_in_workflow_order(client):
 
 
 def test_logs_record_mcp_tool_calls_and_dashboard_actions(client, monkeypatch):
-    monkeypatch.setattr(tools, "APPROVAL_WAIT_SECONDS", 0.1)  # check_approval would otherwise wait 40 s while pending
     pid = client.post("/api/projects", json={"name": "Logs project"}).json()["id"]
     url = f"/mcp?project={pid}&key={_key(pid)}"
     init = {**INIT, "params": {**INIT["params"], "clientInfo": {"name": "claude-code", "version": "2"}}}
@@ -734,8 +715,8 @@ def test_logs_record_mcp_tool_calls_and_dashboard_actions(client, monkeypatch):
         rid = s.exec(select(db.Run).where(db.Run.project_id == pid)).one().id
     call(3, "log_phase", {"run_id": rid, "phase": "branch-preflight", "status": "failed", "notes": "dirty tree"})
     call(4, "get_ticket", {"run_id": rid, "key": "NOPE-1"})
-    call(5, "submit_design_document", {"run_id": rid, "content_md": "# Plan. Do it."})
-    call(51, "check_approval", {"run_id": rid})
+    call(5, "save_document", {"run_id": rid, "path": "00-design/design-document.md", "content": "# Plan. Do it."})
+    call(51, "get_connection_status", {})
     try:  # unknown run -> the tool raises; the test client re-raises what a real server returns as a tool error
         call(6, "get_stage", {"name": "branch-preflight", "run_id": 999999})
     except Exception:
@@ -753,9 +734,10 @@ def test_logs_record_mcp_tool_calls_and_dashboard_actions(client, monkeypatch):
     assert by_event["get_ticket"]["level"] == "warn" and "not known" in by_event["get_ticket"]["message"]
     assert by_event["get_stage"]["level"] == "error" and "failed" in by_event["get_stage"]["message"]
     assert by_event["key.rotated"]["source"] == "dashboard"
-    assert "check_approval" not in by_event  # polling is debug, hidden by default
+    assert by_event["save_document"]["message"] == "Saved document 00-design/design-document.md"
+    assert "get_connection_status" not in by_event  # debug, hidden by default
     debug = client.get(f"/api/projects/{pid}/logs?level=debug").json()["items"]
-    assert any(e["event"] == "check_approval" for e in debug)
+    assert any(e["event"] == "get_connection_status" for e in debug)
     assert [e["event"] for e in client.get(f"/api/projects/{pid}/logs?level=error").json()["items"]] == ["get_stage"]
     assert {e["event"] for e in client.get(f"/api/projects/{pid}/logs?run_id={rid}").json()["items"]} >= {"start_run", "log_phase"}
     assert [e["event"] for e in client.get(f"/api/projects/{pid}/logs?q=dirty").json()["items"]] == ["log_phase"]
@@ -804,19 +786,19 @@ def test_hosting_password_gate_secret_and_database_url(client, monkeypatch):
         assert re_.sub(r"^postgres(ql)?://", "postgresql+psycopg://", given) == "postgresql+psycopg://u:p@h/db"
 
 
-def test_deleting_a_project_removes_its_approvals(client):
+def test_deleting_a_project_removes_its_runs_and_documents(client):
     pid = client.post("/api/projects", json={"name": "Doomed"}).json()["id"]
     rid = tools.do_start_run(pid, "implement DEL-1", client="claude")["run_id"]
-    tools.do_submit_design_document(pid, rid, "# Plan")
-    assert client.post(f"/api/runs/{rid}/approvals/1/decide", json={"decision": "approved", "name": "PO"}).status_code == 200
+    tools.do_save_document(pid, rid, "plan.md", "# Plan")
+    tools.do_log_phase(pid, rid, "branch-preflight", "done")
     assert client.delete(f"/api/projects/{pid}").status_code == 204
     with Session(db.engine) as s:
-        assert s.exec(select(db.Approval).where(db.Approval.run_id == rid)).all() == []
+        assert s.exec(select(db.Document).where(db.Document.run_id == rid)).all() == []
         assert s.exec(select(db.RunPhase).where(db.RunPhase.run_id == rid)).all() == []
-    # a new run (which SQLite may give the same id) starts with no decision
+    # a new run (which SQLite may give the same id) starts with no documents
     pid2 = client.post("/api/projects", json={"name": "Fresh"}).json()["id"]
     rid2 = tools.do_start_run(pid2, "implement NEW-1", client="claude")["run_id"]
-    assert tools.do_check_approval(pid2, rid2)["status"] == "none"
+    assert client.get(f"/api/runs/{rid2}").json()["documents"] == []
 
 
 def test_low_cost_test_mode_routes_every_stage_below_opus(client):

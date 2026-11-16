@@ -6,9 +6,9 @@ export type Integration = { id: number; kind: string; config: Record<string, unk
 export type Ticket = { id: number; key: string; title: string; body_md: string; source: string };
 export type ProjectDetail = Project & { caps: Record<string, string | number>; integrations: Integration[]; tickets: Ticket[]; connect: { setup_ps: string; setup_sh: string; copilot: string; copilot_url: string; copilot_server_name: string; copilot_json: string; download_copilot: string; download_copilot_agent: string; vscode_json: string; download_vscode: string; url: string; claude: string; codex: string; mcp_json: string; codex_toml: string; download_claude: string; download_codex: string; oneliner_claude_ps: string; oneliner_claude_sh: string; oneliner_codex_ps: string; oneliner_codex_sh: string } };
 export type Phase = { id: number; name: string; status: string; notes: string; ts: string };
-export type Approval = { id: number; run_id: number; version: number; content_md: string; status: string; decided_by: string; comment: string; section_comments: Record<string, string>; created_at: string; decided_at: string | null };
-/* one row of a project's Approvals tab: no document text, plus which run it belongs to */
-export type ApprovalRow = Omit<Approval, "content_md"> & { run_number: number; run_title: string; run_goal: string };
+/* a run artifact (design document, stage outputs); lists carry no text, the document page loads it */
+export type DocumentRow = { id: number; run_id: number; path: string; chars: number; updated_at: string; run_number?: number; run_title?: string };
+export type DocumentFull = { id: number; run_id: number; path: string; content: string; updated_at: string };
 export type RunTicket = { key: string; title: string; figma_urls: string[] };
 /* one stage agent of a run, from the API: planned route, reported model, time and estimated cost */
 export type RunAgent = { stage: string; planned_model: string; model: string; tokens: number | null; started_at: string | null; ended_at: string | null; duration_ms: number | null; duration_source: string; est_cost_usd: number | null };
@@ -16,7 +16,7 @@ export type Run = {
   id: number; project_id: number; number: number; goal: string; title: string; project_name?: string; client: string; status: string; branch: string; pr_url: string;
   routing?: string; summary_md: string; started_at: string; finished_at: string | null; usage: Record<string, number | string>;
   phases?: Phase[];
-  approvals?: Approval[];
+  documents?: DocumentRow[];
   tickets?: RunTicket[];
   agents?: RunAgent[];
   current_stage?: { name: string; status: string; notes: string; ts: string } | null;
@@ -48,9 +48,9 @@ export const api = {
   deleteTicket: (pid: number, key: string) => req<void>(`/projects/${pid}/tickets/${encodeURIComponent(key)}`, { method: "DELETE" }),
   runs: (project_id?: number) => req<Run[]>(`/runs${project_id ? `?project_id=${project_id}` : ""}`),
   run: (id: number) => req<Run>(`/runs/${id}`),
-  approvals: (pid: number) => req<ApprovalRow[]>(`/projects/${pid}/approvals`),
-  decide: (rid: number, version: number, decision: "approved" | "changes_requested", name: string, comment: string, section_comments: Record<string, string> = {}) =>
-    req<Approval>(`/runs/${rid}/approvals/${version}/decide`, { method: "POST", body: JSON.stringify({ decision, name, comment, section_comments }) }),
+  stopRun: (rid: number) => req<Run>(`/runs/${rid}/stop`, { method: "POST" }),
+  documents: (pid: number) => req<DocumentRow[]>(`/projects/${pid}/documents`),
+  document: (id: number) => req<DocumentFull>(`/documents/${id}`),
   connect: () => req<Record<string, unknown>>("/connect"),
   rotateKey: (id: number) => req<ProjectDetail["connect"]>(`/projects/${id}/rotate-key`, { method: "POST" }),
   logs: (pid: number, f: { level: string; run_id: string; q: string; limit: number }) =>

@@ -65,7 +65,8 @@ def vscode_json(project: db.Project, base: str) -> str:
 SETUP_FILES = {"claude": ".mcp.json", "codex": ".codex/config.toml", "vscode": ".vscode/mcp.json",
                "copilot-agent": ".github/agents/agents-dashboard.agent.md",
                "figma-check": ".agents-dashboard/figma-check.mjs", "claude-settings": ".claude/settings.json",
-               "codex-hooks": ".codex/hooks.json", "copilot-hooks": ".github/hooks/agents-dashboard.json"}
+               "codex-hooks": ".codex/hooks.json", "copilot-hooks": ".github/hooks/agents-dashboard.json",
+               "upload-docs": ".agents-dashboard/upload-docs.mjs"}
 SECRET_FILES = [".mcp.json", ".codex/config.toml", ".vscode/mcp.json"]  # hold the key; the agent file does not
 
 
@@ -97,6 +98,7 @@ def _merge_toml(existing: str, fresh: str) -> str:
 # from the project's MCP config, so these committed files hold no secret.
 FIGMA_CHECK = (Path(__file__).resolve().parent / "hooks" / "figma-check.mjs").read_text(encoding="utf-8")
 FIGMA_CHECK_SCRIPT = ".agents-dashboard/figma-check.mjs"
+UPLOAD_DOCS = (Path(__file__).resolve().parent / "hooks" / "upload-docs.mjs").read_text(encoding="utf-8")
 _OLD_CLAUDE_HOOK = "node .claude/hooks/agents-dashboard-figma.mjs"  # earlier, Claude-only location
 
 
@@ -150,6 +152,8 @@ def setup_file(project: db.Project, base: str, client: str, existing: str = "") 
         return copilot.agent_profile(project.id, project.name)
     if client == "figma-check":
         return FIGMA_CHECK
+    if client == "upload-docs":
+        return UPLOAD_DOCS
     if client == "claude-settings":
         return _merge_session_hooks(existing, "claude")
     if client == "codex-hooks":

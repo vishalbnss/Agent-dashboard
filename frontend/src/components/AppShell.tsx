@@ -6,14 +6,12 @@ const NAV: { href: string; key: string; label: string; icon: IconName }[] = [
   { href: "#/", key: "", label: "Overview", icon: "overview" },
   { href: "#/projects", key: "projects", label: "Projects", icon: "projects" },
   { href: "#/runs", key: "runs", label: "Runs", icon: "runs" },
-  { href: "#/approvals", key: "approvals", label: "Approvals", icon: "approval" },
   { href: "#/connect", key: "connect", label: "Connection guide", icon: "connect" },
 ];
 
 export function AppShell({ active, projects, runs, children }: { active: string; projects: Project[]; runs: Run[]; children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
-  const waiting = runs.filter((r) => r.status === "awaiting_approval").length;
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setSearchOpen((v) => !v); }
@@ -24,7 +22,7 @@ export function AppShell({ active, projects, runs, children }: { active: string;
   const sidebar = <>
     <a href="#/" className="brand" aria-label="Agents Dashboard overview" onClick={() => setMobileOpen(false)}><span className="brand-mark"><Icon name="branch" /></span><span>Agents Dashboard</span></a>
     <div className="nav-caption">WORKSPACE</div>
-    <nav className="sidebar-nav" aria-label="Main navigation">{NAV.map((item) => <a key={item.key} href={item.href} className={active === item.key ? "active" : ""} aria-label={item.key === "approvals" && waiting ? `Approvals, ${waiting} pending` : item.label} aria-current={active === item.key ? "page" : undefined} onClick={() => setMobileOpen(false)}><Icon name={item.icon} /><span>{item.label}</span>{item.key === "approvals" && waiting > 0 && <span className="nav-count">{waiting}</span>}</a>)}</nav>
+    <nav className="sidebar-nav" aria-label="Main navigation">{NAV.map((item) => <a key={item.key} href={item.href} className={active === item.key ? "active" : ""} aria-label={item.label} aria-current={active === item.key ? "page" : undefined} onClick={() => setMobileOpen(false)}><Icon name={item.icon} /><span>{item.label}</span></a>)}</nav>
   </>;
   return <div className="app-shell">
     <a className="skip-link" href="#main-content" onClick={(e) => { e.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to content</a>
@@ -33,9 +31,7 @@ export function AppShell({ active, projects, runs, children }: { active: string;
     <div className="app-workspace">
       <header className="topbar">
         <button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Icon name="menu" /></button>
-        <button className="workspace-search" onClick={() => setSearchOpen(true)} aria-label="Search workspace"><Icon name="search" /><span>Search projects and runs…</span><kbd>{navigator.platform.includes("Mac") ? "⌘" : "Ctrl"} K</kbd></button>
-        <div className="topbar-right"><a className="review-shortcut" href="#/approvals" aria-label={`${waiting} pending approvals`}><Icon name="approval" />{waiting > 0 && <span>{waiting}</span>}</a></div>
-      </header>
+        <button className="workspace-search" onClick={() => setSearchOpen(true)} aria-label="Search workspace"><Icon name="search" /><span>Search projects and runs…</span><kbd>{navigator.platform.includes("Mac") ? "⌘" : "Ctrl"} K</kbd></button>      </header>
       <main id="main-content" className="main-content" tabIndex={-1}><div className="page-content">{children}</div></main>
     </div>
     {searchOpen && <WorkspaceSearch projects={projects} runs={runs} onClose={() => setSearchOpen(false)} />}

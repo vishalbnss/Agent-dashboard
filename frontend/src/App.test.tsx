@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "./App";
-import { api, type Approval, type Project, type ProjectDetail, type Run, type RunAgent, type LogEntry } from "./api";
+import { api, type DocumentRow, type Project, type ProjectDetail, type Run, type RunAgent, type LogEntry } from "./api";
 
 vi.mock("./api", () => ({ api: {
-  projects: vi.fn(), runs: vi.fn(), project: vi.fn(), approvals: vi.fn(), run: vi.fn(),
-  createProject: vi.fn(), deleteProject: vi.fn(), decide: vi.fn(), rotateKey: vi.fn(),
+  projects: vi.fn(), runs: vi.fn(), project: vi.fn(), documents: vi.fn(), document: vi.fn(), stopRun: vi.fn(), run: vi.fn(),
+  createProject: vi.fn(), deleteProject: vi.fn(), rotateKey: vi.fn(),
   authorizeUrl: vi.fn((kind: string, id: number) => `/api/oauth/${kind}/authorize?project=${id}`),
   deleteIntegration: vi.fn(),
   createTicket: vi.fn(), putTicket: vi.fn(), deleteTicket: vi.fn(), logs: vi.fn(), patchProject: vi.fn(),
@@ -22,12 +22,9 @@ const makeProject = (id: number, name: string, connected = false): Project => ({
 const makeRun = (id: number, title: string, status: string): Run => ({
   id, title, status, project_id: 1, project_name: "Atlas", number: id, goal: title,
   client: id === 3 ? "codex" : "claude", branch: "feature/AT-1", pr_url: "", summary_md: "", usage: {},
-  started_at: timestamp, finished_at: status === "done" ? timestamp : null, phases: [], approvals: [],
+  started_at: timestamp, finished_at: status === "done" ? timestamp : null, phases: [], documents: [],
 });
-const makeApproval = (version = 1): Approval => ({
-  id: version, run_id: 2, version, content_md: "# Implementation plan\n\n## Goal\nAdd the empty state.\n\n## Risks\nCheck small screens.",
-  status: "pending", decided_by: "", comment: "", section_comments: {}, created_at: timestamp, decided_at: null,
-});
+const doc = (id: number, path: string, run_id = 2): DocumentRow => ({ id, run_id, path, chars: 2048, updated_at: timestamp, run_number: run_id, run_title: "AT-2: Empty state" });
 const connect: ProjectDetail["connect"] = {
   setup_ps: "iwr -useb test-setup-ps | iex", setup_sh: "curl -fsSL test-setup-sh | sh",
   copilot: 'copilot mcp add --transport http agents-dashboard-1 "test-copilot-url"',
@@ -55,7 +52,6 @@ beforeEach(() => {
   runs = [makeRun(1, "AT-1: Add navigation", "running"), makeRun(2, "AT-2: Empty state", "awaiting_approval"), makeRun(3, "AT-3: Update footer", "done")];
   integrations = [];
   tickets = [];
-  runs[1].approvals = [makeApproval()];
   projects[0].latest_run = runs[1];
   vi.mocked(api.projects).mockImplementation(async () => [...projects]);
   vi.mocked(api.runs).mockImplementation(async (id) => runs.filter((r) => !id || r.project_id === id));
@@ -67,16 +63,9 @@ beforeEach(() => {
     const ticket = tickets.find((t) => t.key === key)!; Object.assign(ticket, { title, body_md }); return { ...ticket };
   });
   vi.mocked(api.deleteTicket).mockImplementation(async (_pid, key) => { tickets = tickets.filter((t) => t.key !== key); });
-  vi.mocked(api.approvals).mockResolvedValue([]);
+  vi.mocked(api.documents).mockResolvedValue([]);
   vi.mocked(api.run).mockImplementation(async (id) => ({ ...runs.find((r) => r.id === id)! }));
   vi.mocked(api.createProject).mockImplementation(async (name, repo_url) => { const p = { ...makeProject(3, name), repo_url: repo_url || "" }; projects.push(p); return p; });
-  vi.mocked(api.decide).mockImplementation(async (rid, version, decision, name, comment, notes) => {
-    const r = runs.find((run) => run.id === rid)!;
-    const approval = r.approvals!.find((a) => a.version === version)!;
-    Object.assign(approval, { status: decision, decided_by: name, comment, section_comments: notes, decided_at: timestamp });
-    r.status = "running";
-    return { ...approval };
-  });
   vi.mocked(api.rotateKey).mockResolvedValue(connect);
   vi.mocked(api.logs).mockResolvedValue({ items: [], more: false });
   vi.stubGlobal("confirm", vi.fn(() => true));
@@ -463,11 +452,10 @@ describe("workspace redesign", () => {
     const user = userEvent.setup();
     openRoute("");
     await screen.findByRole("heading", { name: "Workspace overview" });
-    for (const label of ["Projects", "Active runs", "Awaiting approval", "Completed runs"]) {
+    for (const label of ["Projects", "Active runs", "Stopped or failed", "Completed runs"]) {
       expect(within(screen.getByRole("link", { name: `${label} 0` })).getByText("0")).toBeTruthy();
     }
     expect(screen.getByText("No runs yet")).toBeTruthy();
-    expect(screen.getByText("No pending approvals")).toBeTruthy();
     await user.click(screen.getByRole("button", { name: "Add project" }));
     const dialog = screen.getByRole("dialog", { name: "Add a project" });
     await user.type(within(dialog).getByLabelText("Project name"), "First project");
@@ -480,13 +468,12 @@ describe("workspace redesign", () => {
     expect(screen.queryByRole("region", { name: "Run history" })).toBeNull();
   });
 
-  it("shows real workspace counts and links to the pending design", async () => {
+  it("shows real workspace counts", async () => {
     openRoute("");
     await screen.findByRole("heading", { name: "Workspace overview" });
     expect(within(screen.getByRole("link", { name: /Projects 2/ })).getByText("2")).toBeTruthy();
     expect(within(screen.getByRole("link", { name: /Active runs 1/ })).getByText("1")).toBeTruthy();
-    expect(within(screen.getByRole("link", { name: /Awaiting approval 1/ })).getByText("1")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Review AT-2: Empty state" }).getAttribute("href")).toBe("#/runs/2/review");
+    expect(screen.queryByRole("link", { name: /Approvals/ })).toBeNull();  // approval happens in the AI chat now
   });
 
   it("filters projects and keeps project links separate from review links", async () => {
@@ -585,58 +572,44 @@ describe("workspace redesign", () => {
     await waitFor(() => expect(api.rotateKey).toHaveBeenCalledWith(1));
   });
 
-  it("saves section notes, prevents accidental approval, and sends a change request", async () => {
+  it("lists a project's documents by run and opens one", async () => {
     const user = userEvent.setup();
-    openRoute("runs/2/review");
-    await screen.findByRole("heading", { name: "Design review" });
-    const section = screen.getByRole("heading", { name: "Risks" }).closest("section")!;
-    await user.click(within(section).getByRole("button", { name: "+ Note" }));
-    await user.type(within(section).getByRole("textbox"), "Include the mobile empty state");
-    await user.click(within(section).getByRole("button", { name: "Save note" }));
-    expect(JSON.parse(localStorage.getItem(`review-notes:2:${timestamp}:v1`)!)).toEqual({ Risks: "Include the mobile empty state" });
-    expect(screen.getByRole("button", { name: "Approve and start" }).hasAttribute("disabled")).toBe(true);
-    await user.type(screen.getByLabelText("Your name"), "Reviewer");
-    await user.click(screen.getByRole("button", { name: "Request changes…" }));
-    await user.click(screen.getByRole("button", { name: "Send back for changes" }));
-    await waitFor(() => expect(api.decide).toHaveBeenCalledWith(2, 1, "changes_requested", "Reviewer", "", { Risks: "Include the mobile empty state" }));
-    await screen.findByRole("heading", { name: /Sent back for changes/ });
+    vi.mocked(api.documents).mockResolvedValue([doc(11, "00-design/design-document.md"), doc(12, "06-test/report.json")]);
+    vi.mocked(api.document).mockImplementation(async (id) => id === 11
+      ? { id, run_id: 2, path: "00-design/design-document.md", content: "# Design\n\n## Goal\nAdd the empty state.", updated_at: timestamp }
+      : { id, run_id: 2, path: "06-test/report.json", content: '{"passed":3}', updated_at: timestamp });
+    runs[1].documents = [doc(11, "00-design/design-document.md"), doc(12, "06-test/report.json")];
+    openRoute("projects/1/documents");
+    expect((await screen.findByRole("tab", { name: "Documents 2" })).getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryByRole("tab", { name: /Approvals/ })).toBeNull();
+    expect(screen.getByRole("link", { name: "Run #2" }).getAttribute("href")).toBe("#/runs/2");
+    await user.click(screen.getByRole("link", { name: "00-design/design-document.md" }));
+    await screen.findByRole("heading", { name: "design-document.md" });
+    expect(screen.getByRole("heading", { name: "Goal" })).toBeTruthy();  // Markdown is rendered
+    await user.click(screen.getByRole("link", { name: "06-test/report.json" }));
+    await screen.findByRole("heading", { name: "report.json" });
+    expect(screen.getByText(/"passed": 3/)).toBeTruthy();  // JSON is pretty-printed
   });
 
-  it("does not restore old review drafts when a fresh database reuses a run ID", async () => {
-    localStorage.setItem("review-notes:2:v1", JSON.stringify({ Risks: "Legacy run note" }));
-    localStorage.setItem("review-notes:2:2026-10-05T08:00:00Z:v1", JSON.stringify({ Risks: "Previous run note" }));
-    openRoute("runs/2/review");
-    await screen.findByRole("heading", { name: "Design review" });
-    expect(screen.queryByText("Legacy run note")).toBeNull();
-    expect(screen.queryByText("Previous run note")).toBeNull();
-    expect(screen.getByRole("button", { name: "Approve and start" }).hasAttribute("disabled")).toBe(false);
+  it("stops a stuck run from the run page", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.stopRun).mockImplementation(async () => { runs[1].status = "stopped"; return runs[1]; });
+    openRoute("runs/2");
+    await user.click(await screen.findByRole("button", { name: "Stop run" }));
+    await waitFor(() => expect(api.stopRun).toHaveBeenCalledWith(2));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Stop run" })).toBeNull());
   });
 
-  it("requires confirmation before approving and preserves the decision payload", async () => {
+  it("accepts ticket IDs that are not Jira-style", async () => {
     const user = userEvent.setup();
-    openRoute("runs/2/review");
-    await screen.findByRole("heading", { name: "Design review" });
-    await user.type(screen.getByLabelText("Your name"), "Reviewer");
-    await user.click(screen.getByRole("button", { name: "Approve and start" }));
-    const dialog = screen.getByRole("dialog", { name: "Approve design document v1?" });
-    expect(api.decide).not.toHaveBeenCalled();
-    await user.click(within(dialog).getByRole("button", { name: "Approve and start" }));
-    await waitFor(() => expect(api.decide).toHaveBeenCalledWith(2, 1, "approved", "Reviewer", "", {}));
-    await screen.findByRole("heading", { name: "Approved" });
-  });
-
-  it("keeps historical designs read-only and shows the revision diff", async () => {
-    const user = userEvent.setup();
-    const previous = { ...makeApproval(), status: "changes_requested", decided_by: "Reviewer", comment: "Add mobile", decided_at: timestamp };
-    const latest = { ...makeApproval(2), content_md: "# Implementation plan\n\n## Goal\nAdd the mobile empty state.\n\n## Risks\nCheck small screens." };
-    runs[1].approvals = [previous, latest];
-    openRoute("runs/2/review");
-    await screen.findByRole("heading", { name: "Design review" });
-    expect(screen.getByText("Removed since v1")).toBeTruthy();
-    await user.click(screen.getByRole("button", { name: "v1 ↩" }));
-    expect(screen.queryByRole("button", { name: "Approve and start" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Go to v2" }));
-    expect(screen.getByRole("button", { name: "Approve and start" })).toBeTruthy();
+    openRoute("projects/1/tickets");
+    await user.click(await screen.findByRole("button", { name: "Add ticket" }));
+    const dialog = screen.getByRole("dialog", { name: "Add ticket" });
+    await user.type(within(dialog).getByLabelText("Ticket ID"), "demo_1");
+    await user.type(within(dialog).getByLabelText("Title"), "Demo");
+    await user.type(within(dialog).getByLabelText("Ticket details"), "Do it");
+    await user.click(within(dialog).getByRole("button", { name: "Save ticket" }));
+    await waitFor(() => expect(api.createTicket).toHaveBeenCalledWith(1, "DEMO_1", "Demo", "Do it"));
   });
 
   it("provides mobile navigation with Escape and focus restoration", async () => {

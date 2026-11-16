@@ -62,11 +62,8 @@ def _message(tool: str, a: dict, r) -> tuple[str, str]:
     if tool == "report_connection":
         ok = a.get("connected")
         return ("info" if ok else "warn"), f"{a.get('kind')} {'reachable' if ok else 'not reachable'}" + (f": {a['detail']}" if a.get("detail") else "")
-    if tool == "submit_design_document":
-        return "info", f"Submitted design document v{r.get('version', '?')} for approval"
-    if tool == "check_approval":
-        st = r.get("status", "?")
-        return ("debug" if st == "pending" else "info"), f"Approval check: {st.replace('_', ' ')}"
+    if tool == "save_document":
+        return "info", f"Saved document {r.get('path') or a.get('path')}"
     if tool == "open_pull_request":
         return "info", f"Opened pull request {r.get('pr_url', '')}"
     if tool == "finish_run":

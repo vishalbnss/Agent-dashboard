@@ -3,10 +3,12 @@ happens through the MCP tools, so this API is the same whether it runs on a lapt
 import json
 import os
 import re
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
+from sqlalchemy import inspect as sa_inspect, text as sa_text
 from sqlmodel import Session, select
 
 from app import connect, db, copilot
@@ -212,13 +214,15 @@ def rotate_key(pid: int, request: Request, s: Session = Depends(db.get_session))
 @router.delete("/projects/{pid}", status_code=204)
 def delete_project(pid: int, s: Session = Depends(db.get_session)):
     p = _get(s, db.Project, pid)
-    for model in (db.Integration, db.Ticket, db.LogEntry):
+    for model in (db.Integration, db.Ticket, db.LogEntry, db.Document):
         for row in s.exec(select(model).where(model.project_id == pid)).all():
             s.delete(row)
+    legacy = "approval" in sa_inspect(db.engine).get_table_names()  # design approvals of older versions
     for run in s.exec(select(db.Run).where(db.Run.project_id == pid)).all():
-        for model in (db.RunPhase, db.Approval):  # a reused run id must never inherit an old approval
-            for row in s.exec(select(model).where(model.run_id == run.id)).all():
-                s.delete(row)
+        for row in s.exec(select(db.RunPhase).where(db.RunPhase.run_id == run.id)).all():
+            s.delete(row)
+        if legacy:
+            s.execute(sa_text("DELETE FROM approval WHERE run_id = :r"), {"r": run.id})
         s.delete(run)
     s.delete(p)
     s.commit()
@@ -307,8 +311,8 @@ class TicketIn(BaseModel):
 def _save_ticket(pid: int, key: str, body: TicketIn, s: Session, *, create_only: bool = False):
     _get(s, db.Project, pid)
     key = key.strip().upper()
-    if not re.fullmatch(r"[A-Z][A-Z0-9]+-\d+", key):
-        raise HTTPException(400, "Use a ticket ID such as FIN-2")
+    if not re.fullmatch(r"[A-Z0-9][A-Z0-9._-]{0,63}", key):
+        raise HTTPException(400, "Use letters, digits, '-', '_' or '.' for the ticket ID, e.g. FIN-2 or DEMO_1")
     if body.key.strip().upper() != key:
         raise HTTPException(400, "The ticket ID does not match")
     if not body.body_md.strip():
@@ -390,8 +394,7 @@ def list_runs(project_id: int | None = None, s: Session = Depends(db.get_session
 def get_run(rid: int, s: Session = Depends(db.get_session)):
     r = _get(s, db.Run, rid)
     phases = s.exec(select(db.RunPhase).where(db.RunPhase.run_id == rid).order_by(db.RunPhase.ts, db.RunPhase.id)).all()
-    approvals = s.exec(select(db.Approval).where(db.Approval.run_id == rid).order_by(db.Approval.version)).all()
-    return {**_run_row(s, r), "phases": phases, "approvals": [a.view() for a in approvals], "tickets": _run_tickets(s, r),
+    return {**_run_row(s, r), "phases": phases, "documents": _documents(s, run_id=rid), "tickets": _run_tickets(s, r),
             "agents": run_agents(r, phases)}
 
 
@@ -422,53 +425,82 @@ def run_agents(r: db.Run, phases: list[db.RunPhase]) -> list[dict]:
 def _run_tickets(s: Session, r: db.Run) -> list[dict]:
     """Tickets named in the request, with title and Figma links when the dashboard has read them, for the review page."""
     from app.integrations import figma
-    from app.mcp.tools import TICKET_KEY_RE
+    from app.mcp.tools import ticket_keys
     out = []
-    for key in dict.fromkeys(TICKET_KEY_RE.findall(r.goal)):
+    for key in ticket_keys(s, r.project_id, r.goal):
         t = s.exec(select(db.Ticket).where(db.Ticket.project_id == r.project_id, db.Ticket.key == key)).first()
         out.append({"key": key, "title": t.title if t else "", "figma_urls": figma.extract_figma_urls(t.body_md) if t else []})
     return out
 
 
-@router.get("/projects/{pid}/approvals")
-def list_approvals(pid: int, s: Session = Depends(db.get_session)):
-    """Every design document version of the project's runs, newest first, without the document text."""
-    rows = s.exec(select(db.Approval, db.Run).where(db.Approval.run_id == db.Run.id, db.Run.project_id == pid)
-                  .order_by(db.Approval.id.desc())).all()
-    return [{**{k: v for k, v in a.view().items() if k != "content_md"},
-             "run_number": r.number, "run_title": r.title, "run_goal": r.goal[:200]} for a, r in rows]
+@router.post("/runs/{rid}/stop")
+def stop_run(rid: int, s: Session = Depends(db.get_session)):
+    """Mark a run stopped from the dashboard, e.g. when the AI session ended without finishing it.
+    It does not reach the AI; the developer stops the agent in its own session."""
+    r = _get(s, db.Run, rid)
+    if r.status in ("done", "failed", "stopped"):
+        raise HTTPException(409, f"The run is already {r.status}")
+    r.status, r.finished_at = "stopped", db.now()
+    s.add(r)
+    s.add(db.RunPhase(run_id=rid, name="stopped", status="failed", notes="Stopped from the dashboard"))
+    s.commit()
+    record(r.project_id, "run.stopped", f"Run #{r.number} stopped from the dashboard", level="warn", run_id=rid)
+    return _run_row(s, r)
 
 
-class DecisionIn(BaseModel):
-    decision: str   # approved | changes_requested
-    name: str
-    comment: str = ""
-    section_comments: dict[str, str] = {}
+# ---- documents (run artifacts) ----
+def _documents(s: Session, *, project_id: int | None = None, run_id: int | None = None) -> list[dict]:
+    """Document list without the text, in path order per run."""
+    q = select(db.Document)
+    q = q.where(db.Document.run_id == run_id) if run_id else q.where(db.Document.project_id == project_id)
+    return [{"id": d.id, "run_id": d.run_id, "path": d.path, "chars": len(d.content), "updated_at": d.updated_at}
+            for d in s.exec(q.order_by(db.Document.run_id.desc(), db.Document.path)).all()]
 
 
-@router.post("/runs/{rid}/approvals/{version}/decide")
-def decide(rid: int, version: int, body: DecisionIn, s: Session = Depends(db.get_session)):
-    """A PO / FDE approves the design document or sends it back with a comment. The waiting agent picks it up."""
-    from app.mcp.tools import decide_approval
-    if body.decision not in ("approved", "changes_requested"):
-        raise HTTPException(400, "decision must be approved or changes_requested")
-    if not body.name.strip():
-        raise HTTPException(400, "Type your name so the decision is recorded")
-    has_notes = any(v.strip() for v in body.section_comments.values())
-    if body.decision == "changes_requested" and not body.comment.strip() and not has_notes:
-        raise HTTPException(400, "Say what should change")
-    if body.decision == "approved" and has_notes:
-        raise HTTPException(400, "Section notes are sent back with a change request. Clear them to approve.")
+@router.get("/projects/{pid}/documents")
+def list_documents(pid: int, s: Session = Depends(db.get_session)):
+    _get(s, db.Project, pid)
+    runs = {r.id: r for r in s.exec(select(db.Run).where(db.Run.project_id == pid)).all()}
+    return [{**d, "run_number": runs[d["run_id"]].number, "run_title": runs[d["run_id"]].title}
+            for d in _documents(s, project_id=pid) if d["run_id"] in runs]
+
+
+@router.get("/documents/{did}")
+def get_document(did: int, s: Session = Depends(db.get_session)):
+    d = _get(s, db.Document, did)
+    return {"id": d.id, "run_id": d.run_id, "path": d.path, "content": d.content, "updated_at": d.updated_at}
+
+
+class DocFile(BaseModel):
+    path: str
+    content: str
+
+
+class DocUpload(BaseModel):
+    run_id: int
+    files: list[DocFile]
+
+
+@router.post("/projects/{pid}/documents/upload")
+def upload_documents(pid: int, key: str, body: DocUpload, s: Session = Depends(db.get_session)):
+    """From .agents-dashboard/upload-docs.mjs on the developer's machine: the run folder's text files.
+    Protected by the project key, like the MCP endpoint (open past DASHBOARD_PASSWORD)."""
+    from app.mcp.tools import save_documents
+    p = _get(s, db.Project, pid)
+    if not secrets.compare_digest(key, p.key or ""):
+        raise HTTPException(401, "Wrong project key")
+    run = s.get(db.Run, body.run_id)
+    if not run or run.project_id != pid:
+        raise HTTPException(404, "Unknown run for this project")
+    if len(body.files) > 300:
+        raise HTTPException(413, "At most 300 files per upload")
     try:
-        a = decide_approval(s, rid, version, body.decision, body.name, body.comment, body.section_comments)
+        n = save_documents(s, run, [(f.path, f.content) for f in body.files])
     except ValueError as e:
-        raise HTTPException(409, str(e))
-    run = s.get(db.Run, rid)
-    verb = "approved" if body.decision == "approved" else "requested changes on"
-    record(run.project_id, "approval.decided", f"{body.name.strip()} {verb} design document v{version}"
-           + (f": {body.comment.strip()}" if body.comment.strip() else ""), run_id=rid,
-           detail={"section_comments": body.section_comments})
-    return a.view()
+        raise HTTPException(400, str(e))
+    s.commit()
+    record(pid, "documents.uploaded", f"{n} document(s) uploaded for run #{run.number}", run_id=run.id, source="mcp")
+    return {"ok": True, "saved": n}
 
 
 class UsageIn(BaseModel):

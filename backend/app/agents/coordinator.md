@@ -32,14 +32,19 @@ Escalate only after a concrete capability failure. Record the requested/effectiv
 
 ## Design approval gate (before any stage)
 
-Report `log_phase(run_id, "design-approval", "running", "Preparing the design document")` before the initial read-only design work and before each revision. Submitting the document changes the run to awaiting approval; waiting for a human decision is not active agent work.
+Report `log_phase(run_id, "design-approval", "running", "Preparing the design document")` before the initial read-only design work and before each revision.
 
-Before Stage 01, nothing in the repository is touched. Read what you need read-only: the ticket(s) with `get_ticket(run_id, key)` (or the ticket text in the request), the linked Figma node(s) through `get_figma_design(run_id, url)` and the `figma` MCP server, `AGENTS.md`, and the parts of the codebase the change would touch. Then write a design document for a product owner or FDE, in plain language, about 600–1,200 words, with these sections: **Goal** (ticket summary in one paragraph); **Scope of changes** (in scope, out of scope, affected screens); **How the implementation will be done** (approach, components to add or change, files to touch, data and state, mapping of each UI element to its Figma node); **Test plan** (which acceptance criteria are covered at Level 1 and Level 2); **Risks, assumptions and open questions**; **Acceptance criteria mapping** (a table: criterion → planned change). Submit it with `submit_design_document(run_id, content)`, then call `log_phase(run_id, "design-approval", "running", "waiting for approval")` and call `check_approval(run_id)` repeatedly for up to 2 hours. Each call waits up to 40 seconds for the reviewer's decision on the server and returns as soon as it is made, so call it again immediately while it is `pending`: do not sleep in the shell, do not end your turn and do not ask the user to say "continue" while waiting. The same applies after every resubmission.
+Before Stage 01, nothing in the repository is touched. Read what you need read-only: the ticket(s) with `get_ticket(run_id, key)` (or the ticket text in the request), the linked Figma node(s) through `get_figma_design(run_id, url)` and the `figma` MCP server, `AGENTS.md`, and the parts of the codebase the change would touch. Then write a design document for the developer, in plain language, about 600–1,200 words, with these sections: **Goal** (ticket summary in one paragraph); **Scope of changes** (in scope, out of scope, affected screens); **How the implementation will be done** (approach, components to add or change, files to touch, data and state, mapping of each UI element to its Figma node); **Test plan** (which acceptance criteria are covered at Level 1 and Level 2); **Risks, assumptions and open questions**; **Acceptance criteria mapping** (a table: criterion → planned change).
 
-- `approved`: start Stage 01. Save the approved document as `.agent-runs/<DELIVERY-ID>/00-design/design-document.md` once the branch exists; Stage 04 must stay consistent with it.
-- `changes_requested`: revise the document according to the comment, resubmit, poll again; at most 3 submissions in total, after which stop the run with `finish_run(status="stopped")` reporting the last comment.
-- Timeout: stop and tell the user the document is still waiting on the dashboard and can be resumed by asking to continue the delivery ID.
-- If Stage 04 later finds that the approved scope or approach cannot hold (missing source, competing nodes, materially different behaviour), do not improvise: submit a revised document and wait for approval again before implementing.
+The developer approves it here, in this chat, not on the dashboard. Save it with `save_document(run_id, "00-design/design-document.md", content)` so it also appears in the dashboard's Documents tab, call `log_phase(run_id, "design-approval", "running", "waiting for the developer's approval in chat")`, then show the document in the chat and ask the developer to reply **approve**, or to say what should change. End your turn and wait for the reply.
+
+- Approved: call `log_phase(run_id, "design-approval", "done", "approved in chat")` and start Stage 01. Write the approved document to `.agent-runs/<DELIVERY-ID>/00-design/design-document.md` once the branch exists; Stage 04 must stay consistent with it.
+- Changes requested: revise the document as asked, save it again with `save_document` (same path), show it, and wait again.
+- If Stage 04 later finds that the approved scope or approach cannot hold (missing source, competing nodes, materially different behaviour), do not improvise: revise the document, show it and wait for the developer's approval again before implementing.
+
+## Documents on the dashboard
+
+After each stage finishes (pass or fail), upload the run folder so the developer can read every artifact in the dashboard's Documents tab: `node .agents-dashboard/upload-docs.mjs <run_id> .agent-runs/<DELIVERY-ID>`. It sends the text files directly, uses no model tokens and prints how many were uploaded. If the script is missing, tell the developer once to run the dashboard's setup command again and continue; an upload failure never blocks the workflow.
 
 ## Nine-stage sequence
 
@@ -115,6 +120,6 @@ This project is managed by the Agents Dashboard (the `agents-dashboard` MCP serv
 
 ## Stop conditions
 
-Stop for a dirty preflight tree, branch collision, a design document sent back three times or not decided within the waiting time, missing Jira/Figma access, ambiguous criteria, incomplete dependency membership, competing authoritative nodes, unresolved synthesis conflicts, repeated failed criteria, failed final gates, blocker/high review findings, missing documentation, or missing external-write authorization. Never transition/comment on Jira, push, open/merge a PR, or enable auto-merge without explicit authorization.
+Stop for a dirty preflight tree, branch collision, missing Jira/Figma access, ambiguous criteria, incomplete dependency membership, competing authoritative nodes, unresolved synthesis conflicts, repeated failed criteria, failed final gates, blocker/high review findings, missing documentation, or missing external-write authorization. Never transition/comment on Jira, push, open/merge a PR, or enable auto-merge without explicit authorization.
 
 Finish with Jira/Figma links, Stage 04 and Stage 08 artifacts, branch/commit/PR state, and a pass/fail table for all nine stages.

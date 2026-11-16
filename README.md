@@ -31,25 +31,31 @@ Claude Code / Codex (in the developer's repo)  --MCP (project id + key)-->  Fast
    (Haiku / Sonnet / Opus, or Luna / Terra / Sol on Codex): branch preflight, Jira intake, Figma intake,
    dependency/design synthesis, implementation, independent tests, review and security, documentation,
    pull request, on a `feature/<ticket>` branch with evidence under `.agent-runs/<ticket>/`. Before any
-   stage the agent reads the ticket, the design and the code, submits a **design document** (approach,
-   scope, files, test plan, risks) and waits until a product owner or FDE approves it. Waiting documents
-   show in the project's **Approvals** tab; the review page highlights what changed since the last
-   version, shows the ticket and Figma link beside it, and lets the reviewer leave notes on single
-   sections. "Request changes" sends the notes and comment back and the agent revises, up to three rounds. Two
-   remediation attempts per failing criterion and one review follow-up, then it stops. Each stage is
+   stage the agent reads the ticket, the design and the code, writes a **design document** (approach,
+   scope, files, test plan, risks), shows it in the chat and waits for the developer to reply "approve" or say
+   what to change; the developer approves on their own machine, not on the dashboard. Two remediation attempts
+   per failing criterion and one review follow-up, then it stops. Each stage is
    reported with `log_phase`; the documentation stage's summary and provenance-safe telemetry go to
    `finish_run`. Pushing and opening the PR always waits for the developer's go-ahead.
+   **Documents**: the design document (saved with `save_document`) and every text artifact under
+   `.agent-runs/<ticket>/` show in the project's **Documents** tab and on the run page. After each stage the agent
+   runs `node .agents-dashboard/upload-docs.mjs <run_id> .agent-runs/<ticket>`, installed by the setup command, which
+   sends the files straight to the dashboard without using model tokens. **Stop run** on the run page marks a run
+   stopped when its AI session ended without finishing it.
 5. **Jira** is connected on the project page with one click: the dashboard signs in to Atlassian's MCP
    server (mcp.atlassian.com) with OAuth, registering itself automatically, so nobody copies app ids or
    tokens anywhere. The agents read tickets with `get_ticket`, which calls that MCP server on the
    project's behalf. Without Jira, open the project's **Tickets** tab and choose **Add ticket**.
    Enter an ID such as `FIN-2`, a title, and details containing requirements, acceptance criteria, and
    Figma links. Save, then ask your connected AI to `Implement FIN-2 and review it` (or use **Copy request**).
-   Saved manual tickets are read before Jira, and saving a ticket does not start a run. The AI submits
-   its design document to **Approvals** before implementation. Ticket text can also be pasted into chat.
+   Ticket IDs can be any letters, digits, `-`, `_` or `.` (e.g. `FIN-2`, `DEMO_1`).
+   Saved manual tickets are read before Jira, and saving a ticket does not start a run. The AI shows
+   its design document in the chat for approval before implementation. Ticket text can also be pasted into chat.
 6. **Figma** is connected by the developer's AI itself: the project config we hand out also lists Figma's
    MCP server (Figma only lets approved AI tools such as Claude Code sign in). In Claude Code: `/mcp`,
-   pick figma, Authenticate, once. `get_figma_design` gives the agents the file and node ids to read.
+   pick figma, Authenticate, once. For a new user the agent starts the sign-in itself
+   (`claude mcp login figma` or `codex mcp login figma`, which open the Figma sign-in page) when its check finds Figma
+   signed out. `get_figma_design` gives the agents the file and node ids to read.
    The Figma connection card shows the latest verified access for each coding client. The MCP server
    instructs the agent to check Figma on the first user message of each new session and after sign-in,
    then report the result through `report_connection`, without creating a run. Downloaded Codex configs
@@ -68,8 +74,8 @@ Claude Code / Codex (in the developer's repo)  --MCP (project id + key)-->  Fast
    completed browser sign-in alone is not verification, and later revocation appears after the next check.
 
 7. **Logs**: the project's **Logs** tab records every MCP tool call the AI makes (with its arguments, result,
-   duration and run) and every dashboard action (approvals, key rotation, Jira sign-in, tickets, setup
-   downloads, AI connections), newest first, with search and level/run filters. Approval polling is logged at
+   duration and run) and every dashboard action (stopped runs, document uploads, key rotation, Jira sign-in, tickets, setup
+   downloads, AI connections), newest first, with search and level/run filters. Connection probes are logged at
    debug level and hidden unless "Everything" is selected. The agents' own LLM calls run inside the coding client,
    so they are not visible to the dashboard; their per-agent model, tokens and time come from `log_phase`.
 
@@ -87,7 +93,7 @@ GitHub Copilot CLI. The ordinary Microsoft Copilot Windows chat app does not use
    in the target project. It contains instructions and project identity, not the connection key.
 4. Start a new Copilot chat and select **Agents Dashboard** in the agent picker (Copilot or Local host).
    Send the connection-check message in the dialog. This performs a read-only check and creates no run.
-5. Copy a request from the **Tickets** tab into that chat. Review the submitted design in **Approvals**.
+5. Copy a request from the **Tickets** tab into that chat. Approve the design document in the chat.
 
 For terminal use, the dialog supplies the install command and `copilot mcp add --transport http` command.
 Open Copilot in the target folder, sign in, select the downloaded profile with `/agent`, and allow the MCP tools.
