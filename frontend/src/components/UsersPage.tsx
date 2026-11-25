@@ -27,7 +27,7 @@ export function UsersPage() {
     {error && <ErrorNotice message={error} onRetry={reload} />}
     {err && <p className="err" role="alert">{err}</p>}
     {!data ? (!error && <LoadingState />) : <div className="table-scroll" role="region" aria-label="Accounts" tabIndex={0}>
-      <table className="runs">
+      <table className="runs users">
         <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Created by</th><th aria-label="Actions"></th></tr></thead>
         <tbody>{data.map((a: Account) => <tr key={a.name}>
           <td><strong>{a.name}</strong>{a.name === user.name && <span className="muted"> (you)</span>}</td>
@@ -39,7 +39,7 @@ export function UsersPage() {
       </table>
     </div>}
     {adding && <AddUserDialog onClose={() => setAdding(false)} onCreated={(name, password) => { setAdding(false); setIssued({ name, password, created: true }); reload(); }} />}
-    {issued && <Dialog title={issued.created ? `${issued.name} can sign in` : `New password for ${issued.name}`} onClose={() => setIssued(null)}>
+    {issued && <Dialog title={issued.created ? `${issued.name} can sign in` : `New password for ${issued.name}`} className="dialog-sm" onClose={() => setIssued(null)}>
       <p>Send {issued.name} this temporary password. They will be asked to choose their own the first time they sign in.</p>
       <div className="setup-cmd"><code aria-label="Temporary password">{issued.password}</code><CopyText text={issued.password} /></div>
       <p className="form-hint">It is shown only once. If it is lost, use Reset password to issue another.</p>
@@ -62,11 +62,11 @@ function AddUserDialog({ onClose, onCreated }: { onClose: () => void; onCreated:
     catch (reason) { setErr(apiMessage(reason, "Could not create the user. Try again.")); }
     finally { setBusy(false); }
   };
-  return <Dialog title="Add user" onClose={() => { if (!busy) onClose(); }}>
+  return <Dialog title="Add user" className="dialog-sm" onClose={() => { if (!busy) onClose(); }}>
     <form onSubmit={submit}>
       <label className="field">User name<input value={name} onChange={(e) => setName(e.target.value)} required maxLength={32} placeholder="priya" autoComplete="off" disabled={busy} /></label>
-      <label className="field">Role<select value={role} onChange={(e) => setRole(e.target.value)} disabled={busy}><option value="developer">Developer: sees and changes only their own projects</option><option value="admin">Admin: reads every project and manages accounts</option></select></label>
-      <p className="form-hint">The dashboard creates a temporary password for you to send them.</p>
+      <label className="field">Role<select value={role} onChange={(e) => setRole(e.target.value)} disabled={busy} aria-describedby="role-hint"><option value="developer">Developer</option><option value="admin">Admin</option></select></label>
+      <p id="role-hint" className="form-hint">{role === "admin" ? "Reads every project and manages accounts." : "Sees and changes only their own projects."} The dashboard then creates a temporary password for you to send them.</p>
       {err && <p className="err" role="alert">{err}</p>}
       <div className="dialog-actions"><button type="button" className="secondary" onClick={onClose} disabled={busy}>Cancel</button><button type="submit" disabled={busy}>{busy ? "Creating…" : "Create user"}</button></div>
     </form>

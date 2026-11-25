@@ -37,7 +37,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   </main>;
   return <AuthContext.Provider value={{ user: state.user, readOnly: state.user?.role === "admin", signOut, changePassword: () => setChanging(true) }}>
     {children}
-    {changing && <Dialog title="Change password" onClose={() => setChanging(false)}>
+    {changing && <Dialog title="Change password" className="dialog-sm" onClose={() => setChanging(false)}>
       <PasswordForm onDone={(user) => { signedIn(user); setChanging(false); }} onCancel={() => setChanging(false)} />
     </Dialog>}
   </AuthContext.Provider>;
@@ -90,7 +90,7 @@ function LoginPage({ onSignedIn }: { onSignedIn: (user: User) => void }) {
       <label className="field"><span>Password</span><input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required disabled={busy} /></label>
       {err && <p className="err" role="alert">{err}</p>}
       <button disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
-      <p className="form-hint">Forgot your password? Ask your dashboard admin for a temporary one.</p>
+      <p className="form-hint login-foot">Forgot your password? Ask your dashboard admin for a temporary one.</p>
     </form>
   </main>;
 }

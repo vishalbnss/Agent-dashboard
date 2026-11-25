@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type DocumentRow, type Phase, type Project, type ProjectDetail, type Run, type RunAgent } from "./api";
 import { AppShell } from "./components/AppShell";
-import { AuthGate, useAuth } from "./components/Auth";
+import { AuthGate, apiMessage, useAuth } from "./components/Auth";
 import { ProjectSummary, RunSummary } from "./components/ActivitySummary";
 import { Dialog, EmptyState, ErrorNotice, Icon, LoadingState, MetricCard, PageHeader } from "./components/ui";
 import { usePolling } from "./hooks/usePolling";
@@ -270,12 +270,12 @@ function AddProjectForm({ className = "", onCreated }: { className?: string; onC
       const p = await api.createProject(name, repo);
       setName(""); setRepo(""); setOpen(false); onCreated?.();
       location.hash = `#/projects/${p.id}`;
-    } catch (e) { setErr(String(e)); } finally { setBusy(false); }
+    } catch (e) { setErr(apiMessage(e, "Could not create the project. Try again.")); } finally { setBusy(false); }
   };
   if (readOnly) return <span className="tag">Admin view · read-only</span>;
   if (!open) return <button className={className} onClick={() => setOpen(true)}><Icon name="plus" />Add project</button>;
   return (
-    <Dialog title="Add a project" onClose={() => { if (!busy) setOpen(false); }}>
+    <Dialog title="Add a project" className="dialog-sm" onClose={() => { if (!busy) setOpen(false); }}>
     <form onSubmit={submit} className="add-project">
       <label className="field"><span>Project name</span><input autoFocus placeholder="e.g. Customer portal" value={name} onChange={(e) => setName(e.target.value)} required disabled={busy} /></label>
       <label className="field"><span>GitHub repository <span className="muted">(optional)</span></span><input placeholder="https://github.com/your-team/project" value={repo} onChange={(e) => setRepo(e.target.value)} disabled={busy} /></label>

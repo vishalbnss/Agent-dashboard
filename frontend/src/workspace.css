@@ -236,8 +236,15 @@ table.runs td:first-child a { text-decoration: none; color: var(--muted); font-v
 .add-project { box-shadow: none; border: 0; background: transparent; padding: 0; min-width: 0; gap: 16px; }
 .field { color: var(--ink-2); }
 .field input, .field textarea { border-radius: 10px; }
-.field input { height: 40px; }
-.form-hint { margin: -8px 0 0; font-size: 11px; color: var(--muted); }
+.field input, .field select { height: 40px; }
+.field select { border-radius: 10px; padding-right: 32px; text-overflow: ellipsis; }
+.dialog form { display: flex; flex-direction: column; gap: 16px; }
+.dialog form p.err, .password-form p.err, .login-card p.err { margin: 0; font-size: 12px; }
+.dialog-sm { width: min(460px, 100%); }
+.dialog-sm > p { margin: 0 0 14px; font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+.dialog-sm > .setup-cmd { margin-bottom: 10px; }
+.dialog-sm > .form-hint { margin: 0 0 4px; }
+.form-hint { margin: -8px 0 0; font-size: 11px; line-height: 1.45; color: var(--muted); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 18px; margin-top: 8px; border-top: 1px solid var(--line); }
 .choose-ai .row, .choose-ai .tabs { gap: 6px; }
 .choose-ai .tabs { display: flex; flex-wrap: wrap; }
@@ -493,7 +500,13 @@ table.runs td:first-child a { text-decoration: none; color: var(--muted); font-v
 @media (max-width: 640px) { .user-chip .tag { display: none; } }
 .login-card .brand { padding: 0; margin: 0 0 4px; }
 .log-user { color: var(--muted); font-weight: 400; text-transform: capitalize; }
-.password-form { display: flex; flex-direction: column; gap: 14px; }
-.password-form .form-hint { margin-top: -10px; }
-.login-card p.form-hint { margin: 0; font-size: 12px; }
-.login-card .link { align-self: center; }
+.password-form { display: flex; flex-direction: column; gap: 16px; }
+.login-card > p.form-hint { margin: -6px 0 0; font-size: 12px; }
+.login-card > p.login-foot { margin: 0; text-align: center; }
+.login-card > .link { align-self: center; }
+.login-card .password-form .dialog-actions { border-top: 0; padding-top: 0; margin-top: 0; }
+.login-card .password-form .dialog-actions button { flex: 1; }
+.user-chip .link { white-space: nowrap; }
+@media (max-width: 640px) { .user-chip .user-name { display: none; } }
+table.users { min-width: 560px; }
+table.users td:last-child { text-align: right; }
