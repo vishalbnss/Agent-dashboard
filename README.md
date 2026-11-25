@@ -163,6 +163,14 @@ Put it behind HTTPS (nginx, Caddy or a cloud load balancer): the project key tra
 Set `DASHBOARD_USERS` on any server reachable from the internet: without it anyone with the URL can open
 projects and copy their connection keys.
 
+**Accounts.** `DASHBOARD_USERS` needs only the first admin, e.g. `admin:<password>:admin`. Everyone else is added
+from the admin's **Users** page: enter a user name and role, and the dashboard shows a temporary password once
+for the admin to send. The new user signs in with it and must choose their own password (at least 8 characters)
+before anything else opens. **Change password** in the top bar works for every account, including env ones
+(the new password is stored hashed in the database and replaces the env one). A user who forgets their password asks
+the admin for **Reset password**, which issues a new temporary one and signs them out. Passwords created on the
+dashboard are stored as PBKDF2-SHA256 hashes in the `user` table; changing a password ends that account's sessions.
+
 ### Render
 
 The repo carries a `Dockerfile` (builds the UI, runs the backend on `$PORT`) and a `render.yaml` Blueprint.

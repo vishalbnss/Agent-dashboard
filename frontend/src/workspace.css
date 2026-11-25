@@ -493,3 +493,7 @@ table.runs td:first-child a { text-decoration: none; color: var(--muted); font-v
 @media (max-width: 640px) { .user-chip .tag { display: none; } }
 .login-card .brand { padding: 0; margin: 0 0 4px; }
 .log-user { color: var(--muted); font-weight: 400; text-transform: capitalize; }
+.password-form { display: flex; flex-direction: column; gap: 14px; }
+.password-form .form-hint { margin-top: -10px; }
+.login-card p.form-hint { margin: 0; font-size: 12px; }
+.login-card .link { align-self: center; }

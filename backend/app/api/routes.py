@@ -63,18 +63,99 @@ def me(request: Request):
     return {"auth": True, "user": auth.session_user(auth.cookie_from(request.scope))}
 
 
-@router.post("/auth/login")
-async def login(body: LoginIn, request: Request):
-    import asyncio
+def _signed_in(request: Request, user: dict):
+    """The response that signs `user` in (a fresh cookie; a password change invalidates the old one)."""
     from fastapi.responses import JSONResponse
-    user = auth.check_password(body.username, body.password) if auth.enabled() else None
-    if not user:
-        await asyncio.sleep(0.5)  # slows down password guessing
-        raise HTTPException(401, "Wrong user name or password")
     res = JSONResponse({"auth": True, "user": user})
     res.set_cookie(auth.COOKIE, auth.session_cookie(user["name"]), max_age=auth.MAX_AGE, httponly=True,
                    samesite="lax", secure=request.url.scheme == "https" or _base_url(request).startswith("https://"))
     return res
+
+
+@router.post("/auth/login")
+async def login(body: LoginIn, request: Request):
+    import asyncio
+    user = auth.check_password(body.username, body.password) if auth.enabled() else None
+    if not user:
+        await asyncio.sleep(0.5)  # slows down password guessing
+        raise HTTPException(401, "Wrong user name or password")
+    return _signed_in(request, user)
+
+
+class PasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+
+
+def _check_new_password(password: str) -> None:
+    if len(password) < auth.MIN_PASSWORD:
+        raise HTTPException(400, f"Use at least {auth.MIN_PASSWORD} characters")
+
+
+@router.post("/auth/password")
+async def change_password(body: PasswordIn, request: Request):
+    """The signed-in user replaces their password (the temporary one from the admin, or their own)."""
+    import asyncio
+    name = auth.current_name(request)
+    if not name:
+        raise HTTPException(400, "Sign-in is off on this dashboard")
+    if not auth.check_password(name, body.current_password):
+        await asyncio.sleep(0.5)
+        raise HTTPException(400, "Your current password is wrong")
+    _check_new_password(body.new_password)
+    if body.new_password == body.current_password:
+        raise HTTPException(400, "Choose a password different from the current one")
+    auth.set_password(name, body.new_password, must_change=False)
+    return _signed_in(request, auth.check_password(name, body.new_password))
+
+
+# ---- accounts (admin only; the gate in app/auth.py enforces it) ----
+class UserIn(BaseModel):
+    name: str
+    role: str = "developer"
+    password: str = ""   # empty: the dashboard makes a temporary one
+
+
+def _temporary(password: str) -> str:
+    if password:
+        _check_new_password(password)
+    return password or auth.temporary_password()
+
+
+@router.get("/users")
+def list_users():
+    return auth.list_users()
+
+
+@router.post("/users", status_code=201)
+def create_user(body: UserIn, request: Request):
+    name = body.name.strip().lower()
+    if not auth.NAME_RE.match(name):
+        raise HTTPException(400, "Use 2-32 lower-case letters, digits, '.', '_' or '-' in the user name")
+    if body.role not in auth.ROLES:
+        raise HTTPException(400, "Role must be developer or admin")
+    if name in auth.users():
+        raise HTTPException(409, "A user with this name already exists")
+    password = _temporary(body.password)
+    auth.create_user(name, body.role, password, by=auth.current_name(request))
+    return {"name": name, "role": body.role, "temporary_password": password}
+
+
+class ResetIn(BaseModel):
+    password: str = ""   # empty: the dashboard makes a temporary one
+
+
+@router.post("/users/{name}/reset-password")
+def reset_user_password(name: str, request: Request, body: ResetIn | None = None):
+    """A new temporary password for someone who forgot theirs; they choose their own at the next sign-in."""
+    name = name.strip().lower()
+    if name not in auth.users():
+        raise HTTPException(404, "No such user")
+    if name == auth.current_name(request):
+        raise HTTPException(400, "Change your own password from the top bar")
+    password = _temporary(body.password if body else "")
+    auth.set_password(name, password, must_change=True, by=auth.current_name(request))
+    return {"name": name, "temporary_password": password}
 
 
 @router.post("/auth/logout")

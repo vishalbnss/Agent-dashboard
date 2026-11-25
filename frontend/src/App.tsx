@@ -8,6 +8,7 @@ import { usePolling } from "./hooks/usePolling";
 import { figmaReports } from "./connections";
 import { TicketsTab } from "./components/TicketsTab";
 import { LogsTab } from "./components/LogsTab";
+import { UsersPage } from "./components/UsersPage";
 import { Cost, RunUsage, type AgentCost } from "./components/RunUsage";
 import "./index.css";
 import "./workspace.css";
@@ -41,7 +42,8 @@ function Workspace() {
   const detail = !!id && (seg === "projects" || seg === "runs");
   return <AppShell active={seg === "documents" ? "projects" : seg} projects={projects} runs={runs}>
     {error && <ErrorNotice message={error} onRetry={reload} />}
-    {!data && !detail && seg !== "connect" && seg !== "documents" ? (!error && <LoadingState />)
+    {seg === "users" ? <UsersPage />
+      : !data && !detail && seg !== "connect" && seg !== "documents" ? (!error && <LoadingState />)
       : seg === "projects" && id ? <ProjectPage key={id} id={+id} tab={sub} />
       : seg === "documents" && id ? <DocumentPage key={id} id={+id} />
       : seg === "runs" && id ? <RunPage key={id} id={+id} />

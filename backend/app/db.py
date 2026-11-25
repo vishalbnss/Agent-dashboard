@@ -75,6 +75,19 @@ class Project(SQLModel, table=True):
         return {**DEFAULT_CAPS, **json.loads(self.caps_json or "{}")}
 
 
+class User(SQLModel, table=True):
+    """A dashboard account created by the admin (or a DASHBOARD_USERS account whose password was changed here).
+    A row overrides the DASHBOARD_USERS entry of the same name. See app/auth.py."""
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(index=True, unique=True)  # lower case
+    password_hash: str                          # pbkdf2_sha256$<iterations>$<salt hex>$<hash hex>
+    role: str = "developer"                     # admin | developer
+    must_change_password: bool = False          # set by the admin's create/reset; cleared when the user picks their own
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=now)
+    password_changed_at: datetime | None = None
+
+
 class Integration(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     project_id: int = Field(foreign_key="project.id", index=True)

@@ -25,7 +25,9 @@ export type Run = {
 /* one line of a project's Logs tab */
 export type LogEntry = { id: number; project_id: number; run_id: number | null; run_number: number | null; ts: string; level: "debug" | "info" | "warn" | "error"; source: "mcp" | "dashboard" | "system"; event: string; client: string; user?: string; message: string; detail: Record<string, unknown>; duration_ms: number | null };
 
-export type User = { name: string; role: "admin" | "developer" };
+export type User = { name: string; role: "admin" | "developer"; must_change_password?: boolean };
+/* a row of the admin's Users page; source "env" is an account from DASHBOARD_USERS */
+export type Account = { name: string; role: "admin" | "developer"; source: "env" | "db"; must_change_password: boolean; created_by: string; created_at: string | null };
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`/api${path}`, { headers: { "Content-Type": "application/json" }, ...init });
@@ -38,6 +40,11 @@ export const api = {
   me: () => req<{ auth: boolean; user: User | null }>("/auth/me"),
   login: (username: string, password: string) => req<{ auth: boolean; user: User | null }>("/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
   logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+  changePassword: (current_password: string, new_password: string) =>
+    req<{ auth: boolean; user: User }>("/auth/password", { method: "POST", body: JSON.stringify({ current_password, new_password }) }),
+  users: () => req<Account[]>("/users"),
+  createUser: (name: string, role: string) => req<{ name: string; role: string; temporary_password: string }>("/users", { method: "POST", body: JSON.stringify({ name, role }) }),
+  resetUserPassword: (name: string) => req<{ name: string; temporary_password: string }>(`/users/${encodeURIComponent(name)}/reset-password`, { method: "POST", body: "{}" }),
   projects:() => req<Project[]>("/projects"),
   project: (id: number) => req<ProjectDetail>(`/projects/${id}`),
   createProject: (name: string, repo_url = "") => req<Project>("/projects", { method: "POST", body: JSON.stringify({ name, repo_url }) }),

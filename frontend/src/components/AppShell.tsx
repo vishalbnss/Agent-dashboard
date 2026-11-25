@@ -13,7 +13,8 @@ const NAV: { href: string; key: string; label: string; icon: IconName }[] = [
 export function AppShell({ active, projects, runs, children }: { active: string; projects: Project[]; runs: Run[]; children: ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
-  const { user, signOut } = useAuth();
+  const { user, signOut, changePassword } = useAuth();
+  const nav = user?.role === "admin" ? [...NAV, { href: "#/users", key: "users", label: "Users", icon: "shield" as IconName }] : NAV;
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setSearchOpen((v) => !v); }
@@ -24,7 +25,7 @@ export function AppShell({ active, projects, runs, children }: { active: string;
   const sidebar = <>
     <a href="#/" className="brand" aria-label="Agents Dashboard overview" onClick={() => setMobileOpen(false)}><span className="brand-mark"><Icon name="branch" /></span><span>Agents Dashboard</span></a>
     <div className="nav-caption">WORKSPACE</div>
-    <nav className="sidebar-nav" aria-label="Main navigation">{NAV.map((item) => <a key={item.key} href={item.href} className={active === item.key ? "active" : ""} aria-label={item.label} aria-current={active === item.key ? "page" : undefined} onClick={() => setMobileOpen(false)}><Icon name={item.icon} /><span>{item.label}</span></a>)}</nav>
+    <nav className="sidebar-nav" aria-label="Main navigation">{nav.map((item) => <a key={item.key} href={item.href} className={active === item.key ? "active" : ""} aria-label={item.label} aria-current={active === item.key ? "page" : undefined} onClick={() => setMobileOpen(false)}><Icon name={item.icon} /><span>{item.label}</span></a>)}</nav>
   </>;
   return <div className="app-shell">
     <a className="skip-link" href="#main-content" onClick={(e) => { e.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to content</a>
@@ -34,7 +35,7 @@ export function AppShell({ active, projects, runs, children }: { active: string;
       <header className="topbar">
         <button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setMobileOpen(true)}><Icon name="menu" /></button>
         <button className="workspace-search" onClick={() => setSearchOpen(true)} aria-label="Search workspace"><Icon name="search" /><span>Search projects and runs…</span><kbd>{navigator.platform.includes("Mac") ? "⌘" : "Ctrl"} K</kbd></button>
-        {user && <div className="topbar-right user-chip"><span className="user-name">{user.name}</span><span className={`tag ${user.role === "admin" ? "warn" : ""}`}>{user.role === "admin" ? "Admin · read-only" : "Developer"}</span><button className="link" onClick={signOut}>Sign out</button></div>}      </header>
+        {user && <div className="topbar-right user-chip"><span className="user-name">{user.name}</span><span className={`tag ${user.role === "admin" ? "warn" : ""}`}>{user.role === "admin" ? "Admin · read-only" : "Developer"}</span><button className="link" onClick={changePassword}>Change password</button><button className="link" onClick={signOut}>Sign out</button></div>}      </header>
       <main id="main-content" className="main-content" tabIndex={-1}><div className="page-content">{children}</div></main>
     </div>
     {searchOpen && <WorkspaceSearch projects={projects} runs={runs} onClose={() => setSearchOpen(false)} />}

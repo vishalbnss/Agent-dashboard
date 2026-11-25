@@ -763,7 +763,7 @@ def test_hosting_sign_in_secret_and_database_url(client, monkeypatch):
     assert client.get("/api/projects").status_code == 401
     assert client.post("/api/auth/login", json={"username": "vishal", "password": "wrong"}).status_code == 401
     me = _sign_in(client, "Vishal", "pw:with:colons")  # a password may contain ':'
-    assert client.get("/api/auth/me", headers=me).json() == {"auth": True, "user": {"name": "vishal", "role": "developer"}}
+    assert client.get("/api/auth/me", headers=me).json() == {"auth": True, "user": {"name": "vishal", "role": "developer", "must_change_password": False}}
     assert client.get("/api/projects", headers=me).status_code == 200
     assert client.get("/api/projects", headers={"Cookie": "ad_session=vishal.9999999999.forged"}).status_code == 401
     # key-protected and machine endpoints stay reachable without signing in
@@ -800,6 +800,59 @@ def test_hosting_sign_in_secret_and_database_url(client, monkeypatch):
     import re as re_
     for given in ("postgres://u:p@h/db", "postgresql://u:p@h/db"):
         assert re_.sub(r"^postgres(ql)?://", "postgresql+psycopg://", given) == "postgresql+psycopg://u:p@h/db"
+
+
+def test_admin_creates_users_who_set_their_own_password(client, monkeypatch):
+    monkeypatch.setenv("DASHBOARD_USERS", "admin:adminpw:admin,vishal:vishalpw")
+    admin, vishal = _sign_in(client, "admin", "adminpw"), _sign_in(client, "vishal", "vishalpw")
+    # only the admin manages accounts
+    assert client.post("/api/users", json={"name": "priya"}, headers=vishal).status_code == 403
+    assert client.get("/api/users", headers=vishal).status_code == 403
+    assert client.post("/api/users", json={"name": "Bad Name!"}, headers=admin).status_code == 400
+    assert client.post("/api/users", json={"name": "vishal"}, headers=admin).status_code == 409
+    assert client.post("/api/users", json={"name": "x2", "role": "boss"}, headers=admin).status_code == 400
+    made = client.post("/api/users", json={"name": "Priya"}, headers=admin).json()
+    assert made["name"] == "priya" and made["role"] == "developer" and len(made["temporary_password"]) >= 8
+    rows = {u["name"]: u for u in client.get("/api/users", headers=admin).json()}
+    assert rows["priya"]["must_change_password"] is True and rows["priya"]["created_by"] == "admin" and rows["admin"]["source"] == "env"
+    with Session(db.engine) as s:  # stored hashed, never as given
+        assert made["temporary_password"] not in s.exec(select(db.User).where(db.User.name == "priya")).one().password_hash
+
+    # with the temporary password she can sign in, but only to set her own
+    priya = _sign_in(client, "priya", made["temporary_password"])
+    assert client.get("/api/auth/me", headers=priya).json()["user"] == {"name": "priya", "role": "developer", "must_change_password": True}
+    assert client.get("/api/projects", headers=priya).status_code == 403
+    change = lambda h, cur, new: client.post("/api/auth/password", json={"current_password": cur, "new_password": new}, headers=h)
+    assert change(priya, "wrong", "priya-own-pw").status_code == 400
+    assert change(priya, made["temporary_password"], "short").status_code == 400
+    r = change(priya, made["temporary_password"], "priya-own-pw")
+    assert r.status_code == 200 and r.json()["user"]["must_change_password"] is False
+    assert client.get("/api/projects", headers=priya).status_code == 401  # the old session ended with the old password
+    priya = {"Cookie": f"ad_session={r.cookies.get('ad_session')}"}  # the response signed her in again
+    client.cookies.clear()
+    assert client.get("/api/projects", headers=priya).status_code == 200
+    assert client.post("/api/auth/login", json={"username": "priya", "password": made["temporary_password"]}).status_code == 401
+    assert client.post("/api/projects", json={"name": "Priya app"}, headers=priya).json()["owner"] == "priya"
+
+    # forgot it: the admin issues a new temporary password, and she must choose again
+    assert client.post("/api/users/vishal/reset-password", headers=vishal).status_code == 403
+    assert client.post("/api/users/admin/reset-password", headers=admin).status_code == 400  # own: use the top bar
+    assert client.post("/api/users/nobody/reset-password", headers=admin).status_code == 404
+    temp = client.post("/api/users/priya/reset-password", headers=admin).json()["temporary_password"]
+    assert client.get("/api/projects", headers=priya).status_code == 401
+    assert _sign_in(client, "priya", temp) and change(_sign_in(client, "priya", temp), temp, "priya-second-pw").status_code == 200
+
+    # an env account (the admin too) can change its own password here; the env password stops working
+    r = change(admin, "adminpw", "admin-new-pw")
+    assert r.status_code == 200
+    assert client.post("/api/auth/login", json={"username": "admin", "password": "adminpw"}).status_code == 401
+    admin = _sign_in(client, "admin", "admin-new-pw")
+    assert client.get("/api/auth/me", headers=admin).json()["user"]["role"] == "admin"
+    assert client.post("/api/projects", json={"name": "x"}, headers=admin).status_code == 403  # still read-only on projects
+    with Session(db.engine) as s:  # leave no accounts behind for other tests
+        for u in s.exec(select(db.User)).all():
+            s.delete(u)
+        s.commit()
 
 
 def test_deleting_a_project_removes_its_runs_and_documents(client):

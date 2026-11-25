@@ -1,16 +1,22 @@
 """Dashboard sign-in and per-user access.
 
-Users come from DASHBOARD_USERS, e.g. "vishal:pw1,rakesh:pw2,admin:pw3:admin" (role defaults to developer).
-Developers see and change only the projects they created; the admin sees every project, read-only.
-With no users configured (local use) sign-in is off and everything is open, as before.
+Accounts come from two places:
+- DASHBOARD_USERS, e.g. "vishal:pw1,rakesh:pw2,admin:pw3:admin" (role defaults to developer): the first admin.
+- The `user` table: accounts the admin creates on the Users page, with a hashed password. A row overrides the
+  DASHBOARD_USERS entry of the same name, which is how an env account changes its password.
+The admin creates an account with a temporary password (or resets one); that user must pick their own password
+before anything else works. Developers see and change only the projects they created; the admin sees every
+project, read-only, and manages accounts.
+With no accounts at all (local use) sign-in is off and everything is open, as before.
 The MCP endpoint and the setup downloads keep using the project key, so a developer's AI reaches only that
-developer's project. ponytail: users live in an env var; move them to a table when people sign up themselves.
+developer's project.
 """
 import hashlib
 import hmac
 import json
 import os
 import re
+import secrets
 import time
 
 from sqlmodel import Session, select
@@ -20,10 +26,33 @@ from app import db
 COOKIE = "ad_session"
 MAX_AGE = 7 * 86400
 ROLES = ("admin", "developer")
+MIN_PASSWORD = 8
+NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,31}$")
+_ITERATIONS = 200_000
 
 
-def users() -> dict[str, dict]:
-    """{name: {"password", "role"}}. A password may contain ':'; only a trailing :admin / :developer is a role."""
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, _ITERATIONS)
+    return f"pbkdf2_sha256${_ITERATIONS}${salt.hex()}${digest.hex()}"
+
+
+def _verify_hash(password: str, stored: str) -> bool:
+    try:
+        _, iterations, salt, digest = stored.split("$")
+        got = hashlib.pbkdf2_hmac("sha256", password.encode(), bytes.fromhex(salt), int(iterations))
+    except ValueError:
+        return False
+    return hmac.compare_digest(got.hex(), digest)
+
+
+def temporary_password() -> str:
+    return secrets.token_urlsafe(9)  # 12 characters
+
+
+def env_users() -> dict[str, dict]:
+    """DASHBOARD_USERS as {name: {"password", "role"}}. A password may contain ':'; only a trailing :admin /
+    :developer is a role."""
     out = {}
     for item in os.getenv("DASHBOARD_USERS", "").split(","):
         name, _, rest = item.strip().partition(":")
@@ -38,6 +67,15 @@ def users() -> dict[str, dict]:
     return out
 
 
+def users() -> dict[str, dict]:
+    """Every account: {name: {"role", "source": "env" | "db", "must_change", and "password" (env) or "hash" (db)}}."""
+    out = {n: {**u, "source": "env", "must_change": False} for n, u in env_users().items()}
+    with Session(db.engine) as s:
+        for u in s.exec(select(db.User)).all():
+            out[u.name] = {"hash": u.password_hash, "role": u.role, "source": "db", "must_change": u.must_change_password}
+    return out
+
+
 def enabled() -> bool:
     return bool(users())
 
@@ -48,14 +86,20 @@ def _sign(text: str) -> str:
 
 
 def _fingerprint(user: dict) -> str:  # changing a password signs everyone out of that account
-    return hashlib.sha256(user["password"].encode()).hexdigest()[:16]
+    return hashlib.sha256((user.get("hash") or user["password"]).encode()).hexdigest()[:16]
+
+
+def _public(name: str, u: dict) -> dict:
+    return {"name": name, "role": u["role"], "must_change_password": bool(u.get("must_change"))}
 
 
 def check_password(name: str, password: str) -> dict | None:
-    u = users().get(name.strip().lower())
-    if u and hmac.compare_digest(u["password"].encode(), password.encode()):
-        return {"name": name.strip().lower(), "role": u["role"]}
-    return None
+    name = name.strip().lower()
+    u = users().get(name)
+    if not u:
+        return None
+    ok = _verify_hash(password, u["hash"]) if u["source"] == "db" else hmac.compare_digest(u["password"].encode(), password.encode())
+    return _public(name, u) if ok else None
 
 
 def session_cookie(name: str) -> str:
@@ -73,7 +117,35 @@ def session_user(cookie: str) -> dict | None:
         return None
     if not hmac.compare_digest(sig, _sign(f"{name}.{exp}.{_fingerprint(u)}")):
         return None
-    return {"name": name, "role": u["role"]}
+    return _public(name, u)
+
+
+def set_password(name: str, password: str, *, must_change: bool, by: str = "") -> None:
+    """Store a password for an existing account (env accounts get a row that overrides DASHBOARD_USERS)."""
+    current = users()[name]
+    with Session(db.engine) as s:
+        row = s.exec(select(db.User).where(db.User.name == name)).first() \
+            or db.User(name=name, role=current["role"], password_hash="", created_by=by)
+        row.password_hash, row.must_change_password, row.password_changed_at = hash_password(password), must_change, db.now()
+        s.add(row)
+        s.commit()
+
+
+def create_user(name: str, role: str, password: str, by: str) -> None:
+    with Session(db.engine) as s:
+        s.add(db.User(name=name, role=role, password_hash=hash_password(password), must_change_password=True, created_by=by))
+        s.commit()
+
+
+def list_users() -> list[dict]:
+    with Session(db.engine) as s:
+        rows = {u.name: u for u in s.exec(select(db.User)).all()}
+    out = []
+    for name, u in sorted(users().items()):
+        row = rows.get(name)
+        out.append({"name": name, "role": u["role"], "source": u["source"], "must_change_password": bool(u.get("must_change")),
+                    "created_by": row.created_by if row else "", "created_at": row.created_at if row else None})
+    return out
 
 
 def cookie_from(scope) -> str:
@@ -118,6 +190,8 @@ def claim_unowned() -> None:
 # calls a developer's machine makes with the project key (setup command, hooks, document upload).
 _OPEN = re.compile(r"^/(mcp(/.*)?|api/health|api/auth/(login|logout|me)|api/oauth/[^/]+/callback|"
                    r"api/projects/\d+/(setup|setup-file|mcp-config|copilot-agent|figma-check|documents/upload))$")
+_OWN_PASSWORD = "/api/auth/password"  # any signed-in user, including the admin and one with a temporary password
+_USERS = re.compile(r"^/api/users(/|$)")  # the admin's account management
 _PROJECT = re.compile(r"^/api/projects/(\d+)(/|$)")
 _RUN = re.compile(r"^/api/runs/(\d+)(/|$)")
 _DOC = re.compile(r"^/api/documents/(\d+)$")
@@ -159,6 +233,14 @@ class Gate:
         if not user:
             return await self._deny(send, 401, "Sign in to the Agents Dashboard.")
         scope.setdefault("state", {})["user"] = user
+        if path == _OWN_PASSWORD:
+            return await self.app(scope, receive, send)
+        if user["must_change_password"]:
+            return await self._deny(send, 403, "Set a new password first.")
+        if _USERS.match(path):
+            if user["role"] != "admin":
+                return await self._deny(send, 403, "Only the admin manages accounts.")
+            return await self.app(scope, receive, send)
         if user["role"] == "admin":
             if scope["method"] not in ("GET", "HEAD"):
                 return await self._deny(send, 403, "The admin view is read-only.")

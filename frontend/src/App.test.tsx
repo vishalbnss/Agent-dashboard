@@ -5,7 +5,7 @@ import App from "./App";
 import { api, type DocumentRow, type Project, type ProjectDetail, type Run, type RunAgent, type LogEntry } from "./api";
 
 vi.mock("./api", () => ({ api: {
-  me: vi.fn(), login: vi.fn(), logout: vi.fn(),
+  me: vi.fn(), login: vi.fn(), logout: vi.fn(), changePassword: vi.fn(), users: vi.fn(), createUser: vi.fn(), resetUserPassword: vi.fn(),
   projects: vi.fn(), runs: vi.fn(), project: vi.fn(), documents: vi.fn(), document: vi.fn(), stopRun: vi.fn(), run: vi.fn(),
   createProject: vi.fn(), deleteProject: vi.fn(), rotateKey: vi.fn(),
   authorizeUrl: vi.fn((kind: string, id: number) => `/api/oauth/${kind}/authorize?project=${id}`),
@@ -652,6 +652,72 @@ describe("workspace redesign", () => {
     cleanup(); openRoute("projects/1/tickets");
     await screen.findByRole("region", { name: "Project tickets" });
     expect(screen.queryByRole("button", { name: "Add ticket" })).toBeNull();
+  });
+
+  it("makes a user with a temporary password choose their own before the workspace opens", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.me).mockResolvedValue({ auth: true, user: { name: "priya", role: "developer", must_change_password: true } });
+    vi.mocked(api.changePassword).mockRejectedValueOnce(new Error('400 {"detail":"Your current password is wrong"}'))
+      .mockResolvedValueOnce({ auth: true, user: { name: "priya", role: "developer", must_change_password: false } });
+    openRoute("");
+    const form = await screen.findByRole("form", { name: "Set a new password" });
+    expect(api.projects).not.toHaveBeenCalled();
+    await user.type(within(form).getByLabelText("Temporary password"), "temp-pass");
+    await user.type(within(form).getByLabelText("New password"), "short");
+    await user.type(within(form).getByLabelText("Confirm new password"), "short");
+    await user.click(within(form).getByRole("button", { name: "Set password" }));
+    expect(await screen.findByText("Use at least 8 characters.")).toBeTruthy();
+    expect(api.changePassword).not.toHaveBeenCalled();
+    await user.clear(within(form).getByLabelText("New password")); await user.type(within(form).getByLabelText("New password"), "priya-own-pw");
+    await user.clear(within(form).getByLabelText("Confirm new password")); await user.type(within(form).getByLabelText("Confirm new password"), "priya-own-pw");
+    await user.click(within(form).getByRole("button", { name: "Set password" }));
+    expect(await screen.findByText("Your current password is wrong")).toBeTruthy();
+    await user.click(within(form).getByRole("button", { name: "Set password" }));
+    await screen.findByRole("heading", { name: "Workspace overview" });
+    expect(api.changePassword).toHaveBeenLastCalledWith("temp-pass", "priya-own-pw");
+    // later, the top bar's Change password opens the same form in a dialog
+    vi.mocked(api.changePassword).mockResolvedValueOnce({ auth: true, user: { name: "priya", role: "developer" } });
+    await user.click(screen.getByRole("button", { name: "Change password" }));
+    const dialog = await screen.findByRole("dialog", { name: "Change password" });
+    await user.type(within(dialog).getByLabelText("Current password"), "priya-own-pw");
+    await user.type(within(dialog).getByLabelText("New password"), "priya-new-pw");
+    await user.type(within(dialog).getByLabelText("Confirm new password"), "priya-new-pw");
+    await user.click(within(dialog).getByRole("button", { name: "Change password" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.queryByRole("link", { name: "Users" })).toBeNull();  // developers do not manage accounts
+  });
+
+  it("lets the admin add a user and reset a password, showing the temporary password once", async () => {
+    const user = userEvent.setup();
+    vi.mocked(api.me).mockResolvedValue({ auth: true, user: { name: "admin", role: "admin" } });
+    const accounts = [
+      { name: "admin", role: "admin" as const, source: "env" as const, must_change_password: false, created_by: "", created_at: null },
+      { name: "vishal", role: "developer" as const, source: "db" as const, must_change_password: false, created_by: "admin", created_at: timestamp },
+    ];
+    vi.mocked(api.users).mockImplementation(async () => [...accounts]);
+    vi.mocked(api.createUser).mockImplementation(async (name, role) => {
+      accounts.push({ name, role: role as "developer", source: "db", must_change_password: true, created_by: "admin", created_at: timestamp });
+      return { name, role, temporary_password: "Tmp-Pass-123" };
+    });
+    vi.mocked(api.resetUserPassword).mockResolvedValue({ name: "vishal", temporary_password: "Reset-Pass-9" });
+    openRoute("");
+    await user.click(await screen.findByRole("link", { name: "Users" }));
+    const table = await screen.findByRole("region", { name: "Accounts" });
+    expect(within(table).getByText("Server settings")).toBeTruthy();
+    expect(within(table).getAllByRole("button", { name: "Reset password" }).length).toBe(1);  // not for yourself
+    await user.click(screen.getByRole("button", { name: "Add user" }));
+    const add = await screen.findByRole("dialog", { name: "Add user" });
+    await user.type(within(add).getByLabelText("User name"), "Priya");
+    await user.click(within(add).getByRole("button", { name: "Create user" }));
+    const shown = await screen.findByRole("dialog", { name: "priya can sign in" });
+    expect(api.createUser).toHaveBeenCalledWith("priya", "developer");
+    expect(within(shown).getByLabelText("Temporary password").textContent).toBe("Tmp-Pass-123");
+    await user.click(within(shown).getByRole("button", { name: "Done" }));
+    expect(await screen.findByText("Temporary password")).toBeTruthy();
+    await user.click(within(screen.getByRole("region", { name: "Accounts" })).getAllByRole("button", { name: "Reset password" })[0]);
+    const reset = await screen.findByRole("dialog", { name: "New password for vishal" });
+    expect(api.resetUserPassword).toHaveBeenCalledWith("vishal");
+    expect(within(reset).getByLabelText("Temporary password").textContent).toBe("Reset-Pass-9");
   });
 
   it("provides mobile navigation with Escape and focus restoration", async () => {
